@@ -14,7 +14,7 @@ NannaNews 是独立运行的高校信息服务，用于收录公开消息、维�
 
 ## 安装与启动
 
-需要 Python 3.11 或更新版本。按 `pyproject.toml` 将项目作为软件包安装：
+需要 Python 3.11 或更新版本和系统 Cairo 库（安装方法见[运维文档](docs/operations.md#安装与配置)）。按 `pyproject.toml` 将项目作为软件包安装：
 
 ```sh
 python3 -m venv .venv

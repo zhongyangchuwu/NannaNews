@@ -15,6 +15,7 @@ python-checks:
   script:
     - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
     - export NANNA_COLLECTION_ENABLED=false
+    - apt-get update && apt-get install -y --no-install-recommends libcairo2
     - python -m pip install '.[test]'
     - python -m compileall -q src/nannanews
     - python -m pytest -q

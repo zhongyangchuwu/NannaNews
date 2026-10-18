@@ -4,14 +4,17 @@
 
 ## 安装与配置
 
-需要 Python 3.11 或更新版本：
+需要 Python 3.11 或更新版本，以及系统 Cairo 共享库。Debian/Ubuntu 安装 Cairo 后，再安装 Python 软件包：
 
 ```sh
+sudo apt-get update && sudo apt-get install -y libcairo2
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install .
 nannanews --help
 ```
+
+生成 PDF 另需 Typst 和中文字库；Docker 镜像已内置这些运行依赖。
 
 `NANNA_DATA_DIR` 指定私有数据根目录。未设置、为空或只有空白时，默认为 `$XDG_DATA_HOME/nannanews`，通常是 `~/.local/share/nannanews`。数据库、上传文件、采集依据和会话密钥都保存在这里；限制该目录的访问权限。将 `.env` 权限设为 `0600`，不要提交 `.env`、密钥、数据库、上传文件或备份。
 
