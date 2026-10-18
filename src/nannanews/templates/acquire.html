@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% block title %}公开内容采集{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div><h1>公开内容采集</h1>
+  <p class="muted">公开来源 → 模型草稿 → 原文对照 → 人工编辑审核。采集不会批准或发布任何内容。</p></div>
+</header>
+<section class="panel" aria-labelledby="model-heading">
+  <h2 id="model-heading">模型配置</h2>
+  <p><span class="status-badge">{{ config.model_name }}</span> {{ config.message }}</p>
+  {% if not config.configured %}<p class="notice notice-error">需要管理员完成上述配置。不会使用假提取、标题占位或其他模型作为替代。</p>{% endif %}
+</section>
+{% if evidence %}
+<section class="panel">
+  <h2>草稿 #{{ evidence.entry_id }} · 来源与模型对照</h2>
+  <p><a class="button" href="{{ url_for('describe', entry_id=evidence.entry_id) }}">编辑草稿</a> <a class="button button-secondary" href="{{ url_for('review', entry_id=evidence.entry_id) }}">人工审核</a></p>
+  <dl>
+    <dt>模型生产者</dt><dd>{{ evidence.model_producer }}（不是人工作者）</dd>
+    <dt>来源类型</dt><dd>{{ evidence.source_type }}</dd>
+    <dt>来源地址</dt><dd>{% if evidence.source_url %}<a href="{{ evidence.source_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.source_url }}</a>{% else %}用户明确提供的公开内容，无来源链接{% endif %}</dd>
+    <dt>抓取时间（不是文章发布日期）</dt><dd>{{ evidence.fetched_at }}</dd>
+    <dt>内容 SHA-256</dt><dd>{{ evidence.digest }}</dd>
+    <dt>原始日期线索</dt><dd>{{ evidence.raw_date_text or '未找到；不补年份' }}</dd>
+  </dl>
+  <div class="grid-two">
+    <section><h3>原文可读正文</h3><pre class="evidence-text">{{ evidence.text or '正文信息在公开图片中，请对照下方图片。' }}</pre></section>
+    <section><h3>原始模型草稿</h3><pre class="evidence-text">{{ evidence.draft | tojson(indent=2) }}</pre><p class="muted">图像引用和模型概括仍须人工核实。此处保存的是提取时的草稿；当前编辑内容请在编辑页查看。</p></section>
+  </div>
+  {% for image in evidence.images %}
+  <figure><img src="{{ url_for('acquisition.evidence_image', entry_id=evidence.entry_id, index=image.index) }}" alt="原文证据图片 {{ image.index + 1 }}" loading="lazy" width="640"><figcaption>图片索引 {{ image.index }} · {{ image.digest }}</figcaption></figure>
+  {% endfor %}
+  <details><summary>保存的原始公开响应（按文本显示，不执行 HTML）</summary><pre class="evidence-text">{{ evidence.raw_content }}</pre></details>
+</section>
+{% else %}
+{% if error %}<div class="notice notice-error" role="alert">{{ error.message }} <span class="muted">({{ error.code }})</span></div>{% endif %}
+{% if result %}
+<section class="panel notice notice-success" role="status">
+  <h2>{{ result.message }}</h2>
+  <ul>{% for item in result.entries %}<li>草稿 #{{ item.id }} — <a href="{{ item.evidence_url }}">原文证据与模型对照</a> · <a href="{{ item.edit_url }}">编辑</a> · <a href="{{ item.review_url }}">审核</a></li>{% endfor %}</ul>
+</section>
+{% endif %}
+<section class="panel">
+  <h2>获取公开文章或提供缺失的公开内容</h2>
+  <p class="muted">链接查询参数完整保留。微信验证、空壳 SPA、空正文或图片不可读会明确报错，绝不会作为成功导入。就业门户请提供具体活动详情链接。</p>
+  <form id="acquire-form" action="{{ url_for('acquisition.acquire') }}" method="post" enctype="multipart/form-data" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-field"><label for="source-url">公开文章 URL（提供文字或图片时可留空）</label><input id="source-url" name="source_url" type="url" maxlength="8192" value="{{ (values or {}).get('source_url', '') }}" placeholder="https://mp.weixin.qq.com/s?__biz=…&amp;mid=…"></div>
+    <details {% if (values or {}).get('public_text') %}open{% endif %}>
+      <summary>原文受限或信息在图片中？提供已公开的正文/图片</summary>
+      <p class="muted">填写或上传后只使用您提供的内容，不绕过原站访问限制。请提供完整的相关内容，不要输入私聊、通讯录、私人群号或非公开联系信息。</p>
+      <div class="form-field"><label for="source-title">原始文章标题（可选）</label><input id="source-title" name="source_title" maxlength="500" value="{{ (values or {}).get('source_title', '') }}"></div>
+      <div class="form-field"><label for="public-text">公开正文（最多 60,000 字符）</label><textarea id="public-text" name="public_text" rows="12" maxlength="60000">{{ (values or {}).get('public_text', '') }}</textarea></div>
+      <div class="form-field"><label for="public-images">公开原图（最多 64 张，单张 32 MiB、合计 128 MiB；PNG/JPEG/WebP/GIF/BMP/TIFF/SVG）</label><input id="public-images" name="public_images" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff,image/svg+xml,.tif,.tiff" multiple><small class="muted">原图保留；模型使用安全转换的完整预览。动画和多页图片会展示全部受支持的帧／页面，不静默截取首帧。</small></div>
+    </details>
+    <label><input type="checkbox" name="public_confirm" value="yes" required> 我确认这些内容已经公开、有权提供，且不含私聊或私人联系信息。</label>
+    <div><button id="acquire-submit" class="button" type="submit" {% if not config.configured %}disabled{% endif %}>提取为待审核草稿</button></div>
+    <p id="acquire-progress" role="status" aria-live="polite" class="muted"></p>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='acquire.js') }}" defer></script>{% endblock %}

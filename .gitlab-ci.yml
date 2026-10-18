@@ -1,0 +1,92 @@
+stages:
+  - verify
+  - image
+  - pages
+
+python-checks:
+  stage: verify
+  image: python:3.12.11-slim-bookworm
+  variables:
+    NANNA_DATA_DIR: "$CI_PROJECT_DIR/.ci-data"
+    NANNA_MODEL_BASE_URL: ""
+    NANNA_MODEL_API_KEY: ""
+    NANNA_COLLECTION_ENABLED: "false"
+    PYTHONDONTWRITEBYTECODE: "1"
+  script:
+    - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
+    - export NANNA_COLLECTION_ENABLED=false
+    - python -m pip install '.[test]'
+    - python -m compileall -q src/nannanews
+    - python -m pytest -q
+
+reader-checks:
+  stage: verify
+  image: node:24-bookworm-slim
+  script:
+    - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
+    - export NANNA_COLLECTION_ENABLED=false
+    - cd reader
+    - npm ci
+    - npm test
+    - npm run check
+
+# Build without starting the application or running acquisition/model code.
+# The runner must support the user namespaces required by rootless BuildKit.
+container-artifact:
+  stage: image
+  image:
+    name: moby/buildkit:v0.22.0-rootless
+    entrypoint: [""]
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  script:
+    - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
+    - export NANNA_COLLECTION_ENABLED=false
+    - buildctl-daemonless.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=deploy/Dockerfile --output type=oci,dest=nannanews.oci.tar
+  artifacts:
+    paths:
+      - nannanews.oci.tar
+    expire_in: 7 days
+
+# A Git tag is the version; push only when this project's registry credentials exist.
+release-image:
+  stage: image
+  image:
+    name: moby/buildkit:v0.22.0-rootless
+    entrypoint: [""]
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  rules:
+    - if: '$CI_COMMIT_TAG && $CI_COMMIT_TAG != "latest" && $CI_REGISTRY && $CI_REGISTRY_IMAGE'
+  script:
+    - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
+    - export NANNA_COLLECTION_ENABLED=false
+    - set +x
+    - test -n "$CI_REGISTRY_USER" && test -n "$CI_REGISTRY_PASSWORD"
+    - mkdir -p "$HOME/.docker"
+    - printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$CI_REGISTRY" "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" > "$HOME/.docker/config.json"
+    - buildctl-daemonless.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=deploy/Dockerfile --output "type=image,name=${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG},push=true"
+
+# Opt-in static publication only. The stage script copies an approved whitelist
+# export and rejects extra files; Pages never reads the private database.
+pages:
+  stage: pages
+  image: node:24-bookworm-slim
+  needs: [reader-checks]
+  rules:
+    - if: '$PUBLISH_STATIC_READER == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
+    - export NANNA_COLLECTION_ENABLED=false
+    - test -n "$STATIC_READER_DATA_SOURCE"
+    - cd reader
+    - npm ci
+    - npm run stage:data -- "$STATIC_READER_DATA_SOURCE"
+    - npm run build
+    - cd ..
+    - mv reader/dist public
+  pages: true
+  artifacts:
+    paths:
+      - public
+    expire_in: 30 days

@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}登录 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page"><div class="panel" style="max-width:32rem;margin:3rem auto"><p class="eyebrow">校园信息库</p><h1>登录</h1><p class="muted">登录后按关键词、日期、院系和来源浏览已收录信息。自动采集与模型提取不等于人工核验；审核和刊发仍在编辑工作台完成。</p>
+<form method="post" class="stack"><div class="form-field"><label for="username">用户名</label><input id="username" type="text" name="username" autocomplete="username" required></div><div class="form-field"><label for="password">密码</label><input id="password" type="password" name="password" autocomplete="current-password" required></div><div class="article-actions"><button class="button" type="submit">登录</button><a class="button button-secondary" href="{{ url_for('public_reader.index') }}">返回公开消息</a></div></form></div></section>
+{% endblock %}

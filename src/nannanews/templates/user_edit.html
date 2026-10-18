@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block title %}编辑用户 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page"><header class="page-header"><div><p class="eyebrow">管理员</p><h1>重置用户密码</h1></div><a class="button button-secondary" href="{{ url_for('user_admin') }}">返回用户管理</a></header><form method="post" class="panel stack" style="max-width:42rem"><div class="form-field"><label for="username">用户名</label><input id="username" type="text" value="{{ user[1] }}" disabled></div><div class="form-field"><label for="new-password">新密码</label><input id="new-password" type="password" name="new_password" autocomplete="new-password" required></div><div class="article-actions"><button class="button" type="submit">更新密码</button></div></form></section>
+{% endblock %}

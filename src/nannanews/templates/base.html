@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>{% block title %}{{ site_name|default('南哪小报') }}{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app-shell">
+    <header class="site-header">
+      <a class="brand" href="{{ url_for('information_reader.index') if library_available and user_role in ['admin','editor','member'] else url_for('public_reader.index') }}">{{ site_name|default('南哪小报') }}</a>
+      <nav class="site-nav" aria-label="主导航">
+        {% if library_available and user_role in ['admin','editor','member'] %}
+          <a href="{{ url_for('information_reader.index') }}">信息库</a>
+          <a href="{{ url_for('information_reader.sources') }}">采集覆盖</a>
+        {% endif %}
+        <a href="{{ url_for('public_reader.index') }}">公开消息</a>
+        <a href="{{ url_for('public_reader.sources') }}">公开来源</a>
+        {% if user_role in ['admin','editor','member'] %}
+          {% if user_role in ['admin','editor'] %}<a href="{{ url_for('main') }}">编辑工作台</a>{% endif %}
+          <form method="post" action="{{ url_for('logout') }}" class="nav-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="nav-button" type="submit">退出登录</button>
+          </form>
+        {% else %}
+          <a href="{{ url_for('login') }}">登录</a>
+        {% endif %}
+      </nav>
+    </header>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}<section class="flash-messages" aria-label="通知" role="status">
+        {% for message in messages %}<p>{{ message }}</p>{% endfor %}
+      </section>{% endif %}
+    {% endwith %}
+    <main id="main-content" class="page-content">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="site-footer"><a href="{{ url_for('public_reader.index') }}">{{ site_name|default('南哪小报') }}</a><span>信息库自阅 · 公开消息须人工审核后发布</span></footer>
+  </div>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

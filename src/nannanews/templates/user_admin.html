@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}用户管理 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page page-stack">
+  <header class="page-header"><div><p class="eyebrow">管理员</p><h1>用户管理</h1><p class="muted">账号权限由管理员维护。</p></div><a class="button button-secondary" href="{{ url_for('main') }}">回到工作台</a></header>
+  {% if users %}
+  <div class="table-panel"><div class="table-scroll" tabindex="0" role="region" aria-label="用户列表">
+    <table><thead><tr><th scope="col">用户编号</th><th scope="col">用户名</th><th scope="col">操作</th></tr></thead><tbody>{% for user in users %}<tr><td>{{ user[0] }}</td><td>{{ user[1] }}</td><td><a class="button button-secondary" href="{{ url_for('user_edit', user_id=user[0]) }}">重置密码</a></td></tr>{% endfor %}</tbody></table>
+  </div></div>
+  {% else %}<section class="empty-state"><h2>暂无用户</h2></section>{% endif %}
+</section>
+{% endblock %}

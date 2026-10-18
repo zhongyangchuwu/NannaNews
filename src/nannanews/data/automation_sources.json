@@ -1,0 +1,1067 @@
+[
+  {
+    "id": "nju-news",
+    "name": "南京大学综合新闻",
+    "url": "https://www.nju.edu.cn/xww/zhxw.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学",
+    "identity_url": "https://www.nju.edu.cn/xww/zhxw.htm",
+    "article_pattern": "^/info/1055/[0-9]+\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://www.nju.edu.cn/info/1055/483671.htm at 2026-10-15T10:40:00.969030+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "0b7a026f0901b771"
+    ]
+  },
+  {
+    "id": "im-lectures",
+    "name": "信息管理学院学术讲座",
+    "url": "https://im.nju.edu.cn/xsjz.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "信息管理学院",
+    "expected_identity": "南京大学信息管理学院",
+    "identity_url": "https://im.nju.edu.cn/xsjz.htm",
+    "article_pattern": "^/info/1151/[0-9]+\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://im.nju.edu.cn/info/1151/53211.htm at 2026-10-15T10:39:50.296297+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "679dc1212df4e1e6"
+    ]
+  },
+  {
+    "id": "ise-notices",
+    "name": "智能软件与工程学院通知公告",
+    "url": "https://ise.nju.edu.cn/tzgg.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "智能软件与工程学院",
+    "expected_identity": "南京大学智能软件与工程学院",
+    "identity_url": "https://ise.nju.edu.cn/tzgg.htm",
+    "article_pattern": "^/info/1018/[0-9]+\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://ise.nju.edu.cn/info/1018/3181.htm at 2026-10-15T10:39:50.287641+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "bc5fd1e077adf721"
+    ]
+  },
+  {
+    "id": "ese-lectures",
+    "name": "电子科学与工程学院讲座信息",
+    "url": "https://ese.nju.edu.cn/jzxx/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "电子科学与工程学院",
+    "expected_identity": "电子科学与工程学院",
+    "identity_url": "https://ese.nju.edu.cn/",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c59278a[0-9]+/page\\.htm$",
+    "evidence": "Public title 讲座信息, keywords 电子科学与工程学院; /e8/12/c59278a845842/page.htm; next /jzxx/list2.htm; 28 records. Independently read 2026-10-14. Preflight 2026-10-15T10:39:50.224720+00:00: 公共来源连接失败；可提供有权公开的正文或图片。. No complete capture is claimed.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "6a9cdac62aeed1aa"
+    ]
+  },
+  {
+    "id": "as-lectures",
+    "name": "大气科学学院学术活动",
+    "url": "https://as.nju.edu.cn/bgjz/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "大气科学学院",
+    "expected_identity": "南京大学大气科学学院",
+    "identity_url": "https://as.nju.edu.cn/bgjz/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c11321a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://as.nju.edu.cn/e6/d4/c11321a845524/page.htm at 2026-10-15T10:39:50.376815+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "1c00fbd5062370f5"
+    ]
+  },
+  {
+    "id": "nju-job-information",
+    "name": "南京大学就业门户公开资讯",
+    "url": "https://job.nju.edu.cn/api/career/content/informations?page=0&size=15",
+    "kind": "nju_job",
+    "enabled": true,
+    "expected_identity": "南京大学就业门户",
+    "identity_url": "https://job.nju.edu.cn/",
+    "detail_path": "/career/info/",
+    "evidence": "Anonymous GET independently returned content records with numeric id, status PUBLISHED, loginRequired false, publishedAt and page metadata. Public portal-16seXU4F.js/information-list-CKHetFkn.js declare this endpoint and zero-based page/size. Independently read 2026-10-14. Preflight 2026-10-15T10:39:50.381408+00:00: Listing readable, but sampled public articles could not be completely captured.. No complete capture is claimed.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "0124ee0db3aeddc6"
+    ]
+  },
+  {
+    "id": "nju-job-specifics",
+    "name": "南京大学就业门户专场招聘会",
+    "url": "https://job.nju.edu.cn/api/career/job/fair/specifics?page=0&size=15",
+    "kind": "nju_job",
+    "enabled": true,
+    "expected_identity": "南京大学就业门户",
+    "identity_url": "https://job.nju.edu.cn/",
+    "detail_path": "/career/specifics/",
+    "scan_all_pages": true,
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://job.nju.edu.cn/career/specifics/631153401433952258 at 2026-10-15T10:39:50.381289+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "0124ee0db3aeddc6"
+    ]
+  },
+  {
+    "id": "jw-notices",
+    "name": "本科生院公告通知",
+    "url": "https://jw.nju.edu.cn/ggtz/main.htm",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "https://jw.nju.edu.cn/ggtz/main.htm",
+    "expected_identity": "本科生院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c26263a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "57fabf1c20875013"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://jw.nju.edu.cn/3e/b8/c26263a605880/page.htm at 2026-10-15T10:39:50.442178+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "xgb-notices",
+    "name": "党委学生工作部公示公告",
+    "url": "https://xgb.nju.edu.cn/gsgg/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "https://xgb.nju.edu.cn/main.htm",
+    "expected_identity": "学生工作部",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c62106a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "c5c6f0bc08b6a660"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://xgb.nju.edu.cn/e8/ce/c62106a846030/page.htm at 2026-10-15T10:39:50.480487+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "tuanwei-news",
+    "name": "校团委最新动态",
+    "url": "https://tuanwei.nju.edu.cn/24480/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "https://tuanwei.nju.edu.cn/main.htm",
+    "expected_identity": "南大青年",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c24480a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "67287affe6c6e76f",
+      "98de5946ddd2a84b"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://tuanwei.nju.edu.cn/e6/16/c24480a845334/page.htm at 2026-10-15T10:39:50.458552+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "chem-academic",
+    "name": "化学学院学术交流",
+    "url": "https://chem.nju.edu.cn/12640/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "化学学院",
+    "identity_url": "https://chem.nju.edu.cn/",
+    "expected_identity": "南京大学化学学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c12640a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "58ce33d599cc6142"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://chem.nju.edu.cn/e7/9d/c12640a845725/page.htm at 2026-10-15T10:39:50.534356+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "law-news",
+    "name": "法学院学院新闻",
+    "url": "https://law.nju.edu.cn/index/xyxw.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "法学院",
+    "identity_url": "https://law.nju.edu.cn/",
+    "expected_identity": "南京大学法学院",
+    "article_pattern": "^/info/1086/[0-9]+\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "49020556926b269f"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://law.nju.edu.cn/info/1086/27281.htm at 2026-10-15T10:40:14.473662+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "cssrf-notices",
+    "name": "科研设施共享中心通知公告",
+    "url": "https://cssrf.nju.edu.cn/63176/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "https://cssrf.nju.edu.cn/63176/list.htm",
+    "expected_identity": "科研设施共享中心",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c63176a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "b383fa6c81e8571d"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://cssrf.nju.edu.cn/e9/03/c63176a846083/page.htm at 2026-10-15T10:39:50.582975+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "life-academic",
+    "name": "生命科学学院学术交流",
+    "url": "https://life.nju.edu.cn/xsjl/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "生命科学学院",
+    "identity_url": "https://life.nju.edu.cn/",
+    "expected_identity": "生命科学学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c12967a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "8c51e0688088dd19"
+    ],
+    "evidence": "Public GET 2026-10-18 verified publisher identity and 14 listing articles with sequential pagination. Sample https://life.nju.edu.cn/e9/6f/c12967a846191/page.htm retained its public PDF as one media page; capture_complete=true. This does not establish WeChat or all-event coverage."
+  },
+  {
+    "id": "history-lectures",
+    "name": "历史学院学术讲座",
+    "url": "https://history.nju.edu.cn/28501/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "历史学院",
+    "identity_url": "https://history.nju.edu.cn/",
+    "expected_identity": "历史学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c28501a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "797f5205367bebf5"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://history.nju.edu.cn/e3/d1/c28501a844753/page.htm at 2026-10-15T10:39:50.650442+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "philo-notices",
+    "name": "哲学学院公告通知",
+    "url": "https://philo.nju.edu.cn/4691/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "哲学学院",
+    "identity_url": "https://philo.nju.edu.cn/",
+    "expected_identity": "哲学学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c4691a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "d4a4552fd1104768",
+      "637d3f101a27e4c0"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://philo.nju.edu.cn/e9/52/c4691a846162/page.htm at 2026-10-15T10:39:50.676664+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "cs-talks",
+    "name": "计算机学院会议讲座",
+    "url": "https://cs.nju.edu.cn/1661/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "计算机学院",
+    "identity_url": "https://cs.nju.edu.cn/1661/list.htm",
+    "expected_identity": "计算机学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c1661a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "78b2557efcb67481",
+      "df52789d746d8af5"
+    ],
+    "evidence": "Public GET 2026-10-18 verified publisher identity and 14 listing articles with sequential pagination. Sample https://cs.nju.edu.cn/e7/cb/c1661a845771/page.htm retained its one poster; capture_complete=true. Previous connection failure was not permanent evidence of unavailability."
+  },
+  {
+    "id": "ai-talks",
+    "name": "人工智能学院学术报告",
+    "url": "https://ai.nju.edu.cn/17811/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "人工智能学院",
+    "identity_url": "https://ai.nju.edu.cn/",
+    "expected_identity": "人工智能学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c17811a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "a8223c5262bf79dc"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://ai.nju.edu.cn/4a/2b/c17811a805419/page.htm at 2026-10-15T10:39:50.709746+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "earth-talks",
+    "name": "地球科学与工程学院学术报告",
+    "url": "https://es.nju.edu.cn/xsbg/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "地球科学与工程学院",
+    "identity_url": "https://es.nju.edu.cn/",
+    "expected_identity": "地球科学与工程学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c22458a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "2e0d3e25ac5c93b2"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://es.nju.edu.cn/e8/99/c22458a845977/page.htm at 2026-10-15T10:39:50.743703+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "sociology-talks",
+    "name": "社会学院学术动态",
+    "url": "https://sociology.nju.edu.cn/17645/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "社会学院",
+    "identity_url": "https://sociology.nju.edu.cn/",
+    "expected_identity": "社会学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c17645a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "bc8268d5dba4e822"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://sociology.nju.edu.cn/e8/85/c17645a845957/page.htm at 2026-10-15T10:39:50.770950+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "njupco-news",
+    "name": "南京大学出版社本社新闻",
+    "url": "http://www.njupco.com/news/",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "http://www.njupco.com/",
+    "expected_identity": "南京大学出版社",
+    "article_pattern": "^/news/press/[0-9]+\\.html$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "c3e12469a1bfe0da",
+      "d33181a3b2d6e729"
+    ],
+    "evidence": "Public GET 2026-10-18 verified publisher identity, one matching current article and next /news/index_2.html. Sample http://www.njupco.com/news/press/1952.html retained complete text and five images; capture_complete=true."
+  },
+  {
+    "id": "meso-news",
+    "name": "中尺度动力学与台风研究团队新闻（静态当前页）",
+    "url": "https://meso.nju.edu.cn/xwdt/index.html",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "https://meso.nju.edu.cn/",
+    "expected_identity": "南京大学中尺度动力学与台风研究团队",
+    "article_pattern": "^/xwdt/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "0b5c2c07da5fcaf4"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://meso.nju.edu.cn/xwdt/20201001/i137207.html at 2026-10-15T10:39:50.833586+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "physics-talks",
+    "name": "物理学院学术报告（首页当前列表）",
+    "url": "https://physics.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "物理学院",
+    "identity_url": "https://physics.nju.edu.cn/",
+    "expected_identity": "南京大学物理学院",
+    "article_pattern": "^/xwdt/xshd/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "67b062625fae02ad"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://physics.nju.edu.cn/xwdt/xshd/20261008/i421485.html at 2026-10-15T10:39:50.870405+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "astronomy-talks",
+    "name": "天文与空间科学学院学术报告（首页当前列表）",
+    "url": "https://astronomy.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "天文与空间科学学院",
+    "identity_url": "https://astronomy.nju.edu.cn/",
+    "expected_identity": "天文与空间科学学院",
+    "article_pattern": "^/xshd/xsbg/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "215822f994aa927a"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://astronomy.nju.edu.cn/xshd/xsbg/20260525/i392785.html at 2026-10-15T10:39:50.922440+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "xsxy-news",
+    "name": "新生学院院内新闻（首页当前列表）",
+    "url": "https://xsxy.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "新生学院",
+    "identity_url": "https://xsxy.nju.edu.cn/",
+    "expected_identity": "新生学院",
+    "article_pattern": "^/sylm/ynxw/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "e6529bef11e6023a"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://xsxy.nju.edu.cn/sylm/ynxw/20261010/i421823.html at 2026-10-15T10:39:50.936478+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "njusz-calendar",
+    "name": "南京大学苏州校区日历（首页当前列表）",
+    "url": "https://njusz.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "identity_url": "https://njusz.nju.edu.cn/",
+    "expected_identity": "南京大学苏州校区",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c58578a[0-9]+/page\\.htm$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "b863c7afc3803180"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://njusz.nju.edu.cn/e8/4a/c58578a845898/page.htm at 2026-10-15T10:39:51.123410+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "hjxy-talks",
+    "name": "环境学院学术交流（首页当前列表）",
+    "url": "https://hjxy.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "环境学院",
+    "identity_url": "https://hjxy.nju.edu.cn/",
+    "expected_identity": "南京大学环境学院",
+    "article_pattern": "^/sy/xsjl/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "8f235309a992cf05",
+      "a690d086768ac5cb"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://hjxy.nju.edu.cn/sy/xsjl/20260920/i417823.html at 2026-10-15T10:39:51.149867+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "business-events",
+    "name": "商学院活动预告",
+    "url": "https://nubs.nju.edu.cn/8897/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "商学院",
+    "identity_url": "https://nubs.nju.edu.cn/",
+    "expected_identity": "南京大学商学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c8897a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "101852ed974e204b"
+    ],
+    "evidence": "Public GET 2026-10-18 verified publisher identity and six matching articles. Sample https://nubs.nju.edu.cn/d4/af/c8897a840879/page.htm provided 2426 characters and no declared images; capture_complete=true. No next-page anchor was exposed by this response."
+  },
+  {
+    "id": "foreign-talks",
+    "name": "外国语学院讲座与活动（首页当前列表）",
+    "url": "https://sfs.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "外国语学院",
+    "identity_url": "https://sfs.nju.edu.cn/",
+    "expected_identity": "外国语学院",
+    "article_pattern": "^//?xwgg/jzyhd/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [],
+    "evidence": "Public GET 2026-10-18 verified publisher identity and three current lecture/activity links. Sample https://sfs.nju.edu.cn//xwgg/jzyhd/20261015/i425853.html retained complete text and six images; capture_complete=true. Scope is only the static homepage list, not all publisher or WeChat history."
+  },
+  {
+    "id": "government-teaching",
+    "name": "政府管理学院教研动态（首页当前列表）",
+    "url": "https://public.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "政府管理学院",
+    "identity_url": "https://public.nju.edu.cn/",
+    "expected_identity": "南京大学政府管理学院",
+    "article_pattern": "^/sy/jydt/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "b1b33b27c435e15c",
+      "0519a0824673680b"
+    ],
+    "evidence": "Public GET 2026-10-18 verified publisher identity and six current teaching-news links. Sample https://public.nju.edu.cn/sy/jydt/20261013/i424140.html passed the integrated fetch, complete-media and model-input preflight paths after selecting form > .mn_content .table-style: 428 characters and one retained image, with no model call. Scope is the static homepage list."
+  },
+  {
+    "id": "math-meetings",
+    "name": "数学学院学术会议（首页当前列表）",
+    "url": "https://math.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "数学学院",
+    "identity_url": "https://math.nju.edu.cn/",
+    "expected_identity": "数学学院",
+    "article_pattern": "^/sy/xshy/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "10f3194456681a6a"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://math.nju.edu.cn/sy/xshy/20260921/i418750.html at 2026-10-15T10:39:51.178922+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "medicine-news",
+    "name": "医学院学院新闻",
+    "url": "https://med.nju.edu.cn/10653/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "医学院",
+    "identity_url": "https://med.nju.edu.cn/",
+    "expected_identity": "南京大学医学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c10653a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "1787e21c2bbebb1e"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://med.nju.edu.cn/e1/c3/c10653a844227/page.htm at 2026-10-15T10:39:51.224735+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "modern-engineering-news",
+    "name": "现代工程与应用科学学院新闻",
+    "url": "https://eng.nju.edu.cn/4967/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "现代工程与应用科学学院",
+    "identity_url": "https://eng.nju.edu.cn/",
+    "expected_identity": "现代工程与应用科学学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c4967a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "2055aea60ee4c73d"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://eng.nju.edu.cn/df/fa/c4967a843770/page.htm at 2026-10-15T10:39:51.276597+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "engineering-management-events",
+    "name": "工程管理学院学术活动",
+    "url": "https://sme.nju.edu.cn/47266/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "工程管理学院",
+    "identity_url": "https://sme.nju.edu.cn/",
+    "expected_identity": "工程管理学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c47266a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "ba14f4007f439739"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://sme.nju.edu.cn/e1/ad/c47266a844205/page.htm at 2026-10-15T10:39:51.313773+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "geography-news",
+    "name": "地理与海洋科学学院新闻",
+    "url": "https://sgos.nju.edu.cn/8416/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "地理与海洋科学学院",
+    "identity_url": "https://sgos.nju.edu.cn/",
+    "expected_identity": "地理与海洋科学学院",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c8416a[0-9]+/page\\.htm$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://sgos.nju.edu.cn/e1/bb/c8416a844219/page.htm at 2026-10-15T10:39:51.344695+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "software-news",
+    "name": "软件学院新闻（首页当前列表）",
+    "url": "https://software.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "软件学院",
+    "identity_url": "https://software.nju.edu.cn/",
+    "expected_identity": "软件学院",
+    "article_pattern": "^//?xyxw/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "dcafa41d6590b907"
+    ],
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://software.nju.edu.cn//xyxw/20260909/i416124.html at 2026-10-15T10:39:51.366996+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "bme-news",
+    "name": "生物医学工程学院新闻（首页当前列表）",
+    "url": "https://bme.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "生物医学工程学院",
+    "identity_url": "https://bme.nju.edu.cn/",
+    "expected_identity": "生物医学工程学院",
+    "article_pattern": "^/xydt/xwdt/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://bme.nju.edu.cn/xydt/xwdt/20260909/i416073.html at 2026-10-15T10:39:51.380843+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": []
+  },
+  {
+    "id": "archives-news",
+    "name": "档案馆新闻动态",
+    "url": "https://dawww.nju.edu.cn/xxdt/xwdt.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学档案馆",
+    "identity_url": "https://dawww.nju.edu.cn/xxdt/xwdt.htm",
+    "article_pattern": "^/info/1061/[0-9]+\\.htm$",
+    "evidence": "Public GET 2026-10-18 verified publisher identity, seven current articles and next /xxdt/xwdt/33.htm. Sample https://dawww.nju.edu.cn/info/1061/75401.htm retained complete text and twelve images; capture_complete=true.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "8b40d44a1b1796c6",
+      "1f645c5a27f880dd"
+    ]
+  },
+  {
+    "id": "graduate-school-notices",
+    "name": "研究生院通知公告",
+    "url": "https://grawww.nju.edu.cn/905/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学研究生院",
+    "identity_url": "https://grawww.nju.edu.cn/",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c905a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://grawww.nju.edu.cn/d6/ef/c905a841455/page.htm at 2026-10-15T10:39:51.405803+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "d8960c56691e21e9"
+    ]
+  },
+  {
+    "id": "remote-ed-news-home",
+    "name": "现代远程教育新闻",
+    "url": "https://de.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学现代远程教育",
+    "identity_url": "https://de.nju.edu.cn/",
+    "article_pattern": "^/sy/xwdt/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://de.nju.edu.cn/sy/xwdt/20260606/i395375.html at 2026-10-15T10:39:51.480141+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "ff14e6965f63bcc6"
+    ]
+  },
+  {
+    "id": "library-notices",
+    "name": "图书馆新闻与通知",
+    "url": "http://lib.nju.edu.cn/xw/xwtz.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学图书馆",
+    "identity_url": "http://lib.nju.edu.cn/xw/xwtz.htm",
+    "article_pattern": "^/info/1065/[0-9]+\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://lib.nju.edu.cn/info/1065/4365.htm at 2026-10-15T10:39:51.504618+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "47aef473287d16c8",
+      "12ad71f114dc60b8"
+    ]
+  },
+  {
+    "id": "psych-center-news",
+    "name": "心理健康教育与研究中心新闻",
+    "url": "https://njuxlzx.nju.edu.cn/48260/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "心理健康教育与研究中心",
+    "identity_url": "https://njuxlzx.nju.edu.cn/48260/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c48260a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://njuxlzx.nju.edu.cn/e8/4c/c48260a845900/page.htm at 2026-10-15T10:39:51.519762+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "45884e2630b29d94"
+    ]
+  },
+  {
+    "id": "ndbgs-campus-news",
+    "name": "南京大学办公室校园动态",
+    "url": "https://ndbgs.nju.edu.cn/xydt/index.html",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学办公室",
+    "identity_url": "https://ndbgs.nju.edu.cn/",
+    "article_pattern": "^/xydt/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Public GET 2026-10-18 verified publisher identity and ten current campus-news links. Sample http://ndbgs.nju.edu.cn/xydt/20261016/i426372.html redirected to HTTPS on the same host and retained complete text and ten images; capture_complete=true. Scope is the static current page.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": []
+  },
+  {
+    "id": "union-news-home",
+    "name": "工会新闻",
+    "url": "https://gh.nju.edu.cn/main.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学工会",
+    "identity_url": "https://gh.nju.edu.cn/main.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c27909a[0-9]+/page\\.htm$",
+    "evidence": "Public GET 2026-10-18 verified publisher identity and two matching homepage articles. Sample https://gh.nju.edu.cn/e2/a7/c27909a844455/page.htm retained complete text and five images; capture_complete=true. Scope is the static homepage list.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "e72f773eadc7ba13"
+    ]
+  },
+  {
+    "id": "skch-research-news",
+    "name": "社会科学处新闻",
+    "url": "https://skch.nju.edu.cn/21885/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "社会科学处",
+    "identity_url": "https://skch.nju.edu.cn/21885/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c21885a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://skch.nju.edu.cn/de/7f/c21885a843391/page.htm at 2026-10-15T10:40:01.055643+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "5942e06a7a590103"
+    ]
+  },
+  {
+    "id": "wb-international-news",
+    "name": "国际化工作处新闻",
+    "url": "https://wb.nju.edu.cn/xwdt/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "国际交流合作处",
+    "identity_url": "https://wb.nju.edu.cn/xwdt/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c4158a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://wb.nju.edu.cn/e8/6e/c4158a845934/page.htm at 2026-10-15T10:40:01.131387+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": []
+  },
+  {
+    "id": "finance-news",
+    "name": "财务处新闻",
+    "url": "https://ndcwc.nju.edu.cn/_s271/6998/list.psp",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "财务处",
+    "identity_url": "https://ndcwc.nju.edu.cn/_s271/6998/list.psp",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c6998a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://ndcwc.nju.edu.cn/7d/74/c6998a753012/page.htm at 2026-10-15T10:40:19.758345+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "2145f2a4fbf0de5e"
+    ]
+  },
+  {
+    "id": "sbc-news-home",
+    "name": "实验室与设备管理处新闻",
+    "url": "https://sbc.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "实验室与设备管理处",
+    "identity_url": "https://sbc.nju.edu.cn/",
+    "article_pattern": "^/xwdt/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://sbc.nju.edu.cn/xwdt/20260918/i417791.html at 2026-10-15T10:40:14.497201+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "57f87a100644969c"
+    ]
+  },
+  {
+    "id": "alumni-news",
+    "name": "校友总会新闻",
+    "url": "https://alumni.nju.edu.cn/xydt/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "校友会",
+    "identity_url": "https://alumni.nju.edu.cn/main.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c24819a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://alumni.nju.edu.cn/e7/49/c24819a845641/page.htm at 2026-10-15T10:40:14.561280+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": []
+  },
+  {
+    "id": "hqjt-news",
+    "name": "后勤服务集团新闻",
+    "url": "https://hqjt.nju.edu.cn/zhxw/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "后勤服务集团",
+    "identity_url": "https://hqjt.nju.edu.cn/zhxw/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c40085a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://hqjt.nju.edu.cn/e8/44/c40085a845892/page.htm at 2026-10-15T10:40:14.581039+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "e6be5612198bcd34"
+    ]
+  },
+  {
+    "id": "sis-activities",
+    "name": "国际关系学院新闻",
+    "url": "https://sis.nju.edu.cn/46083/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "国际关系学院",
+    "expected_identity": "南京大学国际关系学院",
+    "identity_url": "https://sis.nju.edu.cn/46083/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c46083a[0-9]+/page\\.htm$",
+    "evidence": "Public GET 2026-10-18 verified publisher identity, fourteen listing articles and next /46083/list2.htm. Sample https://sis.nju.edu.cn/e7/fa/c46083a845818/page.htm retained complete text and five images; capture_complete=true.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "324c4395d21d0568"
+    ]
+  },
+  {
+    "id": "nh-news",
+    "name": "南京赫尔辛基学院新闻",
+    "url": "https://nh.nju.edu.cn/index/xyxw.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "南京赫尔辛基大气与地球系统科学学院",
+    "expected_identity": "南京赫尔辛基大气与地球系统科学学院",
+    "identity_url": "https://nh.nju.edu.cn/index/xyxw.htm",
+    "article_pattern": "^/info/1036/[0-9]+\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://nh.nju.edu.cn/info/1036/8991.htm at 2026-10-15T10:40:14.607060+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": []
+  },
+  {
+    "id": "dii-academic",
+    "name": "匡亚明学院学术活动",
+    "url": "https://dii.nju.edu.cn/xshd/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "匡亚明学院",
+    "expected_identity": "匡亚明学院",
+    "identity_url": "https://dii.nju.edu.cn/xshd/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c8336a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://dii.nju.edu.cn/df/86/c8336a843654/page.htm at 2026-10-15T10:40:41.909768+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "86638beb701d2a47"
+    ]
+  },
+  {
+    "id": "hwxy-home-news",
+    "name": "海外教育学院新闻",
+    "url": "https://hwxy.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "海外教育学院",
+    "expected_identity": "南京大学海外教育学院",
+    "identity_url": "https://hwxy.nju.edu.cn/",
+    "article_pattern": "^/syxx/xw/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://hwxy.nju.edu.cn/syxx/xw/20260729/i406434.html at 2026-10-15T10:40:45.640106+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "246ca7df0bb54c7a"
+    ]
+  },
+  {
+    "id": "marxism-home-news",
+    "name": "马克思主义学院新闻",
+    "url": "https://marxism.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "马克思主义学院",
+    "expected_identity": "南京大学马克思主义学院",
+    "identity_url": "https://marxism.nju.edu.cn/",
+    "article_pattern": "^/info/1043/[0-9]+\\.htm$",
+    "evidence": "Public GET 2026-10-18 verified publisher identity and three matching homepage news links. Sample https://marxism.nju.edu.cn/info/1043/22551.htm retained complete text and thirteen images; capture_complete=true. Scope is the static homepage list.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "612a5501deee808f",
+      "d2aace5d84cd1ff5"
+    ]
+  },
+  {
+    "id": "art-academic",
+    "name": "艺术学院学术活动",
+    "url": "https://art.nju.edu.cn/55327/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "艺术学院",
+    "expected_identity": "南京大学艺术学院",
+    "identity_url": "https://art.nju.edu.cn/55327/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c55327a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://art.nju.edu.cn/d7/7a/c55327a841594/page.htm at 2026-10-15T10:40:38.351369+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "4bab7693a30c99c9"
+    ]
+  },
+  {
+    "id": "is-news",
+    "name": "智能科学与技术学院新闻",
+    "url": "https://is.nju.edu.cn/57162/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "智能科学与技术学院",
+    "expected_identity": "南京大学智能科学与技术学院",
+    "identity_url": "https://is.nju.edu.cn/57162/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c57162a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://is.nju.edu.cn/e5/33/c57162a845107/page.htm at 2026-10-15T10:40:51.880497+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "3dd9494bcb18e45b"
+    ]
+  },
+  {
+    "id": "ic-news",
+    "name": "集成电路学院新闻",
+    "url": "https://ic.nju.edu.cn/63085/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "集成电路学院",
+    "expected_identity": "南京大学集成电路学院",
+    "identity_url": "https://ic.nju.edu.cn/63085/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c63085a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://ic.nju.edu.cn/de/0d/c63085a843277/page.htm at 2026-10-15T10:40:45.650571+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "3d293011a488978d"
+    ]
+  },
+  {
+    "id": "sdem-news",
+    "name": "数字经济与管理学院新闻",
+    "url": "https://sdem.nju.edu.cn/56973/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "数字经济与管理学院",
+    "expected_identity": "南京大学数字经济与管理学院",
+    "identity_url": "https://sdem.nju.edu.cn/56973/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c56973a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://sdem.nju.edu.cn/ac/3a/c56973a830522/page.htm at 2026-10-15T10:40:45.684464+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "e6d5cee93c254f73"
+    ]
+  },
+  {
+    "id": "sser-news",
+    "name": "能源与资源学院新闻",
+    "url": "https://sser.nju.edu.cn/xwdt.htm",
+    "kind": "html",
+    "enabled": true,
+    "publisher_college": "能源与资源学院",
+    "expected_identity": "南京大学能源与资源学院",
+    "identity_url": "https://sser.nju.edu.cn/xwdt.htm",
+    "article_pattern": "^/info/1010/[0-9]+\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://sser.nju.edu.cn/info/1010/2841.htm at 2026-10-15T10:40:45.692384+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "b6eb7d53d287cabb"
+    ]
+  },
+  {
+    "id": "dafls-news",
+    "name": "大学外语部新闻",
+    "url": "https://dafls.nju.edu.cn/13166/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "大学外语部",
+    "identity_url": "https://dafls.nju.edu.cn/13166/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c13166a[0-9]+/page\\.htm$",
+    "evidence": "Public GET 2026-10-18 confirmed the actual title 大学外语部 rather than 南京大学大学外语部. Corrected expected identity verifies the existing identity URL and four matching listing articles with next /13166/list2.htm. Sample https://dafls.nju.edu.cn/da/c4/c13166a842436/page.htm retained complete text and one image; capture_complete=true.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "4af71ad28591591d"
+    ]
+  },
+  {
+    "id": "tyb-sports",
+    "name": "体育部最新动态",
+    "url": "https://tyb.nju.edu.cn/fzlm/zxdt/index.html",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学体育部",
+    "identity_url": "https://tyb.nju.edu.cn/fzlm/zxdt/index.html",
+    "article_pattern": "^/fzlm/zxdt/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://tyb.nju.edu.cn/fzlm/zxdt/20240531/i267655.html at 2026-10-15T10:40:45.714655+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "f0b0b08b471f2999"
+    ]
+  },
+  {
+    "id": "hnc-news",
+    "name": "中美文化研究中心资讯",
+    "url": "https://hnc.nju.edu.cn/zxkx.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学中美文化研究中心",
+    "identity_url": "https://hnc.nju.edu.cn/zxkx.htm",
+    "article_pattern": "^/info/1304/[0-9]+\\.htm$",
+    "evidence": "Public GET 2026-10-18 verified publisher identity, ten listing articles and next /zxkx/66.htm. Sample https://hnc.nju.edu.cn/info/1304/38011.htm retained complete text and two images; capture_complete=true.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "a0f0c401bb704cf3"
+    ]
+  },
+  {
+    "id": "imb-news",
+    "name": "现代生物研究院新闻",
+    "url": "https://imb.nju.edu.cn/yjyxw/index.html",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "现代生物研究院",
+    "identity_url": "https://imb.nju.edu.cn/yjyxw/index.html",
+    "article_pattern": "^/yjyxw/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Public GET 2026-10-18 verified identity and literal var dataList JSON beside #ajaxpage-list/#ajaxpage-template. The integrated decoder returned 86 distinct same-host article URLs with explicit millisecond publication dates, excluded external WeChat links, and never executed scripts or promoted embedded archives into undated current articles. Sample http://imb.nju.edu.cn/yjyxw/20261016/i426091.html passed complete capture and model-input media preflight with 720 characters and one retained image; no model call was made.",
+    "discovery_scope": "embedded_listing",
+    "directory_ids": [
+      "fe6eae07a39afa7d"
+    ]
+  },
+  {
+    "id": "iddi-news",
+    "name": "长江产业发展研究院新闻",
+    "url": "https://iddi.nju.edu.cn/26386/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学",
+    "identity_url": "https://iddi.nju.edu.cn/26386/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c26386a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://iddi.nju.edu.cn/e2/7a/c26386a844410/page.htm at 2026-10-15T10:40:45.764107+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "8f15a7bf72e1dda0"
+    ]
+  },
+  {
+    "id": "itsc-news",
+    "name": "信息化建设管理服务中心新闻",
+    "url": "https://itsc.nju.edu.cn/xwdt/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "信息化建设管理服务中心",
+    "identity_url": "https://itsc.nju.edu.cn/xwdt/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c21414a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://itsc.nju.edu.cn/e1/40/c21414a844096/page.htm at 2026-10-15T10:40:45.783720+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "40cb813cf3426b2e"
+    ]
+  },
+  {
+    "id": "cssrac-home-news",
+    "name": "中国社会科学研究评价中心新闻",
+    "url": "https://cssrac.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学中国社会科学研究评价中心",
+    "identity_url": "https://cssrac.nju.edu.cn/",
+    "article_pattern": "^/xwdt/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://cssrac.nju.edu.cn/xwdt/20260906/i415642.html at 2026-10-15T10:40:45.801740+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": []
+  },
+  {
+    "id": "ndzcgs-news",
+    "name": "资产经营有限公司新闻",
+    "url": "https://ndzcgs.nju.edu.cn/6705/list.htm",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学",
+    "identity_url": "https://ndzcgs.nju.edu.cn/6705/list.htm",
+    "article_pattern": "^/[a-f0-9]{2}/[a-f0-9]{2}/c6705a[0-9]+/page\\.htm$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original https://ndzcgs.nju.edu.cn/d9/15/c6705a842005/page.htm at 2026-10-15T10:40:45.812260+00:00. Scope: paginated_listing. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": []
+  },
+  {
+    "id": "slle-home-news",
+    "name": "终身教育学院新闻",
+    "url": "https://slle.nju.edu.cn/",
+    "kind": "html",
+    "enabled": true,
+    "expected_identity": "南京大学",
+    "identity_url": "https://slle.nju.edu.cn/",
+    "article_pattern": "^/sy/xwgg/[0-9]{8}/i[0-9]+\\.html$",
+    "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://slle.nju.edu.cn/sy/xwgg/20261010/i421874.html at 2026-10-15T10:40:45.832763+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness.",
+    "discovery_scope": "static_current_page",
+    "directory_ids": [
+      "4f1dc9beb259078f",
+      "c4a846d26e5eefac"
+    ]
+  }
+]

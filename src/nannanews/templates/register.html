@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block title %}创建账号 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page"><div class="panel" style="max-width:32rem;margin:3rem auto"><p class="eyebrow">账号</p><h1>创建账号</h1><form method="post" class="stack"><div class="form-field"><label for="username">用户名</label><input id="username" type="text" name="username" autocomplete="username" required></div><div class="form-field"><label for="password">密码</label><input id="password" type="password" name="password" autocomplete="new-password" required></div><div class="article-actions"><button class="button" type="submit">注册</button><a class="button button-secondary" href="{{ url_for('login') }}">返回登录</a></div></form></div></section>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% from 'reader_macros.html' import date_value %}
+{% block title %}{{ record.title }} | 信息库{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑"><a href="{{ url_for('information_reader.index') }}">信息库</a><span>/</span><span>记录 {{ record.id }}</span></nav>
+<article class="article-view article-layout">
+  <header class="article-header"><h1>{{ record.title }}</h1></header>
+  <div class="article-main">
+    <section class="article-body"><h2>{{ '原文摘录（非生成摘要）' if record.entry_id is none else '信息说明' }}</h2><p class="preserve-lines">{{ record.description or '暂无说明。' }}</p></section>
+    <section class="article-body"><h2>捕获的完整原文</h2>{% if record.content_text %}<div class="evidence-text">{{ record.content_text }}</div>{% else %}<p class="muted">此记录没有保存的原文文本（例如人工录入）；不以说明替代原文。</p>{% endif %}</section>
+    {% if image_count %}<section class="article-body"><h2>捕获的原文图片证据</h2>{% for index in range(image_count) %}<figure class="article-image"><img src="{{ url_for('information_reader.evidence_image', record_id=record.id, index=index) }}" alt="原文图片证据 {{ index + 1 }}" loading="lazy"><figcaption>原文图片索引：{{ index }} · 尚须人工核验</figcaption></figure>{% endfor %}</section>{% endif %}
+    {% if user_role in ['admin','editor'] %}<section class="article-body"><h2>提取与院系关联证据</h2>{% for quote in record.evidence_quotes|default([]) %}<blockquote class="evidence-text">{{ quote.text if quote is mapping else quote }}{% if quote is mapping and quote.image_index is not none %}<footer>原文图片索引：{{ quote.image_index }}</footer>{% endif %}</blockquote>{% else %}<p class="muted">未记录提取证据。</p>{% endfor %}{% for college in record.colleges %}{% if college.evidence %}<p><strong>{{ college.name }} · {{ college.relation }}</strong></p><blockquote class="evidence-text">{{ college.evidence }}</blockquote>{% endif %}{% endfor %}</section>{% endif %}
+  </div>
+  <aside class="article-sidebar">
+    {% set model_status_labels = {
+      'completed': '提取成功', 'history_deferred': '原文留存成功，未提取',
+      'raw_only': '原文留存成功，未提取', 'failed': '提取失败', 'model_failed': '提取失败',
+      'uncertain': '结果未确认', 'model_uncertain': '结果未确认', 'fetch_failed': '读取失败',
+      'pending': '等待提取', 'running': '正在处理', 'extracting': '正在提取',
+      'not_extracted': '尚未提取', 'manual': '人工记录，未调用模型',
+      'legacy_model': '旧记录，提取状态不明确'
+    } %}
+    {% set review_status_labels = {'approved': '已审核', 'pending': '待审核', 'rejected': '已驳回', 'unverified': '未核验'} %}
+    <section class="panel">
+      <h2>处理与审核状态</h2>
+      <dl class="article-provenance">
+        <div><dt>模型处理</dt><dd><span class="status-badge {% if record.model_status in ['failed', 'uncertain', 'model_failed', 'model_uncertain', 'fetch_failed'] %}status-error{% elif record.model_status == 'completed' %}status-success{% else %}status-neutral{% endif %}">{{ model_status_labels.get(record.model_status, record.model_status or '无模型提取记录') }}</span></dd></div>
+        <div><dt>人工审核状态</dt><dd><span class="status-badge {% if record.verification_status == 'approved' %}status-success{% else %}status-unverified{% endif %}">{{ review_status_labels.get(record.verification_status, record.verification_status or '未知') }}</span></dd></div>
+        <div><dt>本站刊载日期</dt><dd>{{ date_value(record.publication_date) }}</dd></div>
+        <div><dt>原文发布日期</dt><dd>{{ date_value(record.source_published_date) }}</dd></div>
+        <div><dt>活动日期</dt><dd>{{ date_value(record.event_date) }}</dd></div>
+        <div><dt>截止日期</dt><dd>{{ date_value(record.deadline_date) }}</dd></div>
+        {% if record.date_uncertainty %}<div><dt>日期不确定性</dt><dd>{{ record.date_uncertainty }}</dd></div>{% endif %}
+      </dl>
+      <p class="muted">本站刊载日期、原文发布日期、活动日期和截止日期各自独立。缺失日期不推测年份。</p>
+    </section>
+    <section class="source-note">
+      <h2>来源与溯源</h2>
+      <dl class="article-provenance">
+        <div><dt>来源</dt><dd>{{ record.source_name or '未知 / 未配置来源' }}</dd></div>
+        <div><dt>院系及关系</dt><dd>{% for college in record.colleges %}{{ college.name }}（{{ {'publisher':'发布','associated':'相关','audience':'面向'}.get(college.relation, college.relation) }}）{% if not loop.last %}、{% endif %}{% else %}<span class="muted">未知</span>{% endfor %}</dd></div>
+        <div><dt>原文文档</dt><dd>{{ record.document_id if record.document_id is not none else '无' }}</dd></div>
+        {% if provenance %}<div><dt>实际抓取时间</dt><dd>{{ date_value(provenance.fetched_at, with_time=true) }}</dd></div><div><dt>内容摘要标识</dt><dd class="break-anywhere">{{ provenance.digest or '未知' }}</dd></div>{% endif %}
+      </dl>
+      {% if record.source_id %}<p>来源处理台账：<a href="{{ url_for('information_reader.sources', mode='new', source_id=record.source_id) }}">新内容</a> · <a href="{{ url_for('information_reader.sources', mode='history', source_id=record.source_id) }}">历史活动</a></p>{% endif %}
+      {% if record.source_url %}<a href="{{ record.source_url }}" target="_blank" rel="noopener noreferrer">打开原始来源 ↗</a>{% endif %}
+    </section>
+  </aside>
+</article>
+<div class="article-actions"><a class="button button-secondary" href="{{ url_for('information_reader.index') }}">返回信息库</a><a href="{{ url_for('information_reader.api_record', record_id=record.id) }}">JSON 数据</a></div>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% from 'reader_macros.html' import date_value %}
+{% block title %}{{ entry.title }} | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑"><a href="{{ url_for('public_reader.index') }}">消息</a><span aria-hidden="true">/</span><a href="{{ url_for('public_reader.index', tag=entry.tag) }}">{{ entry.tag or '活动消息' }}</a></nav>
+<article class="article-view article-layout">
+  <header class="article-header"><span class="status-badge">{{ entry.tag or '校园消息' }}</span><h1>{{ entry.title }}</h1></header>
+  <div class="article-main">
+    {% if entry.image_url %}<figure class="article-image"><img src="{{ entry.image_url }}" alt="{{ entry.title }}配图"><figcaption>{{ entry.title }}配图</figcaption></figure>{% endif %}
+    {% if entry.lecture_data %}<section class="lecture-panel" aria-labelledby="lecture-title"><h2 id="lecture-title">讲座信息</h2>
+      {% set lecture = entry.lecture_data %}
+      <dl class="detail-list">
+        {% if lecture.series and lecture.series.name %}<div><dt>系列</dt><dd>{{ lecture.series.name }}{% if lecture.series.number %} {{ lecture.series.number }}{% endif %}</dd></div>{% endif %}
+        {% if lecture.schedule %}<div><dt>时间</dt><dd>{{ date_value(lecture.schedule.date, empty='日期未知') }}{% if lecture.schedule.start_time %} {{ lecture.schedule.start_time }}{% endif %}{% if lecture.schedule.end_time %}–{{ lecture.schedule.end_time }}{% endif %}</dd></div>{% endif %}
+        {% if lecture.venue %}<div><dt>地点</dt><dd>{{ lecture.venue }}</dd></div>{% endif %}{% if lecture.organizer %}<div><dt>主办方</dt><dd>{{ lecture.organizer }}</dd></div>{% endif %}
+        {% for person in lecture.speakers|default([]) %}{% if person.name %}<div><dt>主讲人</dt><dd>{{ person.name }}{% if person.title %} · {{ person.title }}{% endif %}{% if person.biography %}<p>{{ person.biography }}</p>{% endif %}</dd></div>{% endif %}{% endfor %}
+        {% for person in lecture.discussants|default([]) %}{% if person.name %}<div><dt>与谈人</dt><dd>{{ person.name }}{% if person.title %} · {{ person.title }}{% endif %}{% if person.biography %}<p>{{ person.biography }}</p>{% endif %}</dd></div>{% endif %}{% endfor %}
+        {% if lecture.inviter is mapping and lecture.inviter.name %}<div><dt>邀请人</dt><dd>{{ lecture.inviter.name }}{% if lecture.inviter.title %} · {{ lecture.inviter.title }}{% endif %}</dd></div>{% elif lecture.inviter is iterable %}{% for person in lecture.inviter %}{% if person.name %}<div><dt>邀请人</dt><dd>{{ person.name }}{% if person.title %} · {{ person.title }}{% endif %}</dd></div>{% endif %}{% endfor %}{% endif %}
+        {% if lecture.moderator is mapping and lecture.moderator.name %}<div><dt>主持人</dt><dd>{{ lecture.moderator.name }}{% if lecture.moderator.title %} · {{ lecture.moderator.title }}{% endif %}</dd></div>{% elif lecture.moderator is iterable %}{% for person in lecture.moderator %}{% if person.name %}<div><dt>主持人</dt><dd>{{ person.name }}{% if person.title %} · {{ person.title }}{% endif %}</dd></div>{% endif %}{% endfor %}{% endif %}
+        {% if lecture.target_audience %}<div><dt>面向人群</dt><dd>{{ lecture.target_audience }}</dd></div>{% endif %}{% if lecture.registration %}<div><dt>报名方式</dt><dd>{{ lecture.registration }}</dd></div>{% endif %}{% if lecture.online_access %}<div><dt>线上参与</dt><dd>{{ lecture.online_access }}</dd></div>{% endif %}
+      </dl>
+      {% if lecture.abstract %}<h3>讲座摘要</h3><p class="preserve-lines">{{ lecture.abstract }}</p>{% endif %}
+    </section>{% endif %}
+    <section class="article-body" aria-label="消息正文"><h2>消息详情</h2><p class="preserve-lines">{{ entry.description or '暂无补充说明。' }}</p></section>
+  </div>
+  <aside class="article-sidebar">
+    <section class="panel"><h2>刊载信息</h2><dl class="article-provenance">
+      <div><dt>审核状态</dt><dd><span class="status-badge status-success">已审核</span></dd></div>
+      <div><dt>本站刊载日期</dt><dd>{{ date_value(entry.publication_date) }}</dd></div>
+      <div><dt>原文发布日期</dt><dd>{{ date_value(entry.source_published_date) }}</dd></div>
+      <div><dt>活动日期</dt><dd>{{ date_value(entry.event_date) }}</dd></div>
+      <div><dt>截止日期</dt><dd>{{ date_value(entry.deadline_date) }}</dd></div>
+      <div><dt>来源</dt><dd>{{ entry.source_name or '未知 / 未配置来源' }}</dd></div>
+      <div><dt>院系及关系</dt><dd>{% for college in entry.colleges %}{{ college.name }}（{{ {'publisher':'发布','associated':'相关','audience':'面向'}.get(college.relation, college.relation) }}）{% if not loop.last %}、{% endif %}{% else %}<span class="muted">未知</span>{% endfor %}</dd></div>
+    </dl></section>
+    {% if entry.source_url %}<section class="source-note"><h2>原始来源</h2><a href="{{ entry.source_url }}" target="_blank" rel="noopener noreferrer">打开原文 <span aria-hidden="true">↗</span></a></section>{% endif %}
+  </aside>
+</article>
+<div class="article-actions"><a class="button button-secondary" href="{{ url_for('public_reader.index') }}">返回消息列表</a><a href="{{ url_for('public_reader.issue', date_text=entry.publish_date) }}">查看本期</a><a href="{{ url_for('public_reader.issue_pdf', date_text=entry.publish_date) }}">可选：下载已刊发 PDF</a></div>
+{% endblock %}

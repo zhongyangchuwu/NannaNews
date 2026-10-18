@@ -1,0 +1,84 @@
+{% extends 'base.html' %}
+{% from 'reader_macros.html' import date_value %}
+{% block title %}条目与刊发管理 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page page-stack">
+  <header class="page-header">
+    <div><p class="eyebrow">管理员</p><h1>条目与刊发管理</h1><p class="muted">只有完成审核的内容可以进入刊发工作流。检查日期与已选条目后再提交。</p></div>
+    <div class="section-actions">
+      <a class="button button-secondary" href="{{ url_for('main') }}">工作台</a><a class="button button-secondary" href="{{ url_for('publish') }}">刊发预览</a>
+      {% if user_role|default('admin') == 'admin' %}<a class="button button-secondary" href="{{ url_for('user_admin') }}">用户管理</a>{% endif %}
+    </div>
+  </header>
+  <form id="publishForm" action="{{ url_for('admin_publish') }}" method="post" class="panel stack">
+    <div class="form-grid">
+      <div class="form-field"><label for="publish-time">刊载日期</label><input type="date" id="publish-time" name="publish_time" value="{{ default_publish_date }}"></div>
+      <p class="muted">选择列表中的条目，然后选择一个操作。</p>
+    </div>
+    <div class="section-actions">
+      <button class="button" type="submit">发布选定条目</button><button class="button button-secondary" type="button" id="selectAllBtn">全选</button><button class="button button-secondary" type="button" id="selectUnpublishedBtn">选择未发布</button><button class="button button-secondary" type="button" onclick="unpublishSelected()">取消发布</button><button class="button button-secondary" type="button" onclick="makeInvalidSelected()">标记无效</button>
+    </div>
+  </form>
+  <form id="publishTodayForm" action="{{ url_for('admin_publish_today') }}" method="post" class="section-actions"><button type="submit" class="button">刊载今天上传的条目</button></form>
+  {% if entries %}
+  <div class="table-panel">
+    <div class="table-scroll" tabindex="0" role="region" aria-label="条目与刊发列表">
+      <table class="data-table admin-table">
+        <colgroup><col class="column-select"><col class="column-content"><col class="column-date"><col class="column-time"><col class="column-state"><col class="column-category"><col class="column-actions"></colgroup>
+        <thead><tr><th scope="col">选择</th><th scope="col">标题</th><th scope="col">刊载日期</th><th scope="col">提交时间</th><th scope="col">状态</th><th scope="col">类型</th><th scope="col">操作</th></tr></thead>
+        <tbody>
+          {% for entry in entries %}
+          <tr>
+            <td><input type="checkbox" name="entry_ids" value="{{ entry[0] }}" form="publishForm" aria-label="选择 {{ entry[3] }}"></td>
+            <td><strong class="cell-title">{{ entry[3] }}</strong></td>
+            <td>{{ date_value(entry[14], empty='未刊载' if not entry[14] else '未知') }}</td>
+            <td>{{ date_value(entry[2], with_time=true, empty='—') }}</td>
+            <td><span class="status-badge {% if entry[9] in ['approved','Approved'] %}status-success{% elif entry[9] == 'invalid' %}status-neutral{% else %}status-unverified{% endif %}">{{ {'pending':'待撰写','described':'待审核','modified':'修改待复核','approved':'已批准','Approved':'已批准','invalid':'无效'}.get(entry[9], entry[9] or '未设置') }}</span></td>
+            <td>{{ entry[10] }}</td>
+            <td><div class="cell-actions"><a class="button button-secondary" href="{{ url_for('admin_edit', entry_id=entry[0]) }}">编辑</a><form action="{{ url_for('admin_delete', entry_id=entry[0]) }}" method="post"><button type="submit" class="button button-secondary" onclick="return confirm('确定删除该条目？此操作不可撤销。')">删除</button></form></div></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}<section class="empty-state"><h2>暂无条目</h2><p>工作台中提交的条目会显示在这里。</p></section>{% endif %}
+  {% if total_pages > 1 %}
+  <nav class="pagination" aria-label="管理列表分页">
+    {% if page > 1 %}<a class="button button-secondary" href="{{ url_for('admin', page=page-1) }}">上一页</a>{% else %}<span class="button button-disabled">上一页</span>{% endif %}
+    <span>第 {{ page }} / {{ total_pages }} 页</span>
+    {% if page < total_pages %}<a class="button button-secondary" href="{{ url_for('admin', page=page+1) }}">下一页</a>{% else %}<span class="button button-disabled">下一页</span>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}
+{% block scripts %}<script>
+(() => {
+ const selectAll = document.getElementById('selectAllBtn');
+ selectAll?.addEventListener('click', () => {
+   const boxes = document.querySelectorAll('input[name="entry_ids"]');
+   const shouldSelect = Array.from(boxes).some(box => !box.checked);
+   boxes.forEach(box => { box.checked = shouldSelect; });
+   selectAll.textContent = shouldSelect ? '取消全选' : '全选';
+ });
+ document.getElementById('selectUnpublishedBtn')?.addEventListener('click', () => {
+   document.querySelectorAll('tbody tr').forEach(row => {
+     const box = row.querySelector('input[name="entry_ids"]');
+     if (box) box.checked = row.cells[2]?.textContent.trim() === '未刊载';
+   });
+ });
+ function submitSelection(action, message) {
+   const boxes = Array.from(document.querySelectorAll('input[name="entry_ids"]:checked'));
+   if (!boxes.length) { alert('请至少选择一个条目'); return; }
+   if (!confirm(message)) return;
+   const form = document.createElement('form');
+   form.method = 'post'; form.action = action;
+   const token = document.querySelector('meta[name="csrf-token"]')?.content;
+   if (token) { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'csrf_token'; input.value = token; form.append(input); }
+   boxes.forEach(box => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'entry_ids'; input.value = box.value; form.append(input); });
+   document.body.append(form); form.submit();
+ }
+ window.unpublishSelected = () => submitSelection({{ url_for('admin_unpublish')|tojson }}, '确定取消所选条目的刊载状态吗？');
+ window.makeInvalidSelected = () => submitSelection({{ url_for('admin_make_invalid')|tojson }}, '确定将所选条目标记为无效吗？');
+})();
+</script>{% endblock %}

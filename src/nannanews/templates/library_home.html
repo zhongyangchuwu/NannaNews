@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% from 'reader_macros.html' import filters_form, hidden_filters, metadata, pagination %}
+{% block title %}信息库 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<div class="page-stack">
+  <header class="page-header">
+    <div><p class="eyebrow">登录后自阅</p><h1>校园信息库</h1><p class="muted">全部已捕获信息均保留；筛选仅改变当前视图，不删除记录。默认按原文发布日期从新到旧排列，未知日期单独标注。</p></div>
+    <div class="section-actions"><a class="button button-secondary" href="{{ url_for('information_reader.sources') }}">来源与采集覆盖</a></div>
+  </header>
+  <div class="notice" role="note">自动采集和模型提取不等于人工核验。未核验、尚未提取和提取失败的原文同样可查；请以原始来源为准。公开消息仍须审核后刊载。</div>
+  {{ filters_form(filters, options, url_for('information_reader.index')) }}
+  <section class="section-header results-summary" aria-live="polite"><div><h2>当前筛选结果</h2><p class="muted">共 {{ total }} 条 · 第 {{ page }} 页{% if filters.q %} · “{{ filters.q }}”{% endif %}</p></div></section>
+  {% if records %}
+    <div class="news-grid">
+      {% for record in records %}
+        <article class="news-card">
+          <div class="card-content">
+            <div class="card-meta"><span class="status-badge {% if record.verification_status != 'approved' %}status-unverified{% endif %}">{{ '已审核' if record.verification_status == 'approved' else '未核验' }}</span><span class="muted">{{ record.tag or '原文记录' }}</span></div>
+            <h3><a href="{{ url_for('information_reader.detail', record_id=record.id) }}">{{ record.title }}</a></h3>
+            {% if record.entry_id is none %}<p class="muted">原文摘录 · {{ {'not_extracted':'尚未提取','failed':'提取失败','pending':'等待提取'}.get(record.model_status, record.model_status or '尚未提取') }}（非生成摘要）</p>{% endif %}
+            <p class="card-description">{{ record.description|default('', true)|truncate(220, true, '…') }}</p>
+            {{ metadata(record, compact=true) }}
+            <a class="text-link" href="{{ url_for('information_reader.detail', record_id=record.id) }}">阅读全文与来源 →</a>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <section class="empty-state"><h3>没有符合条件的记录</h3><p>可清除日期范围、调整院系关系或关键词。来源覆盖和待采集队列请查看来源状态；空结果不代表全校没有消息。</p><a class="button button-secondary" href="{{ url_for('information_reader.index') }}">查看全部记录</a></section>
+  {% endif %}
+  {{ pagination(page, pages, previous_url, next_url) }}
+  <section class="section-note reader-tools"><a href="{{ api_url }}">当前筛选的 JSON 数据</a></section>
+  <section class="export-panel"><h2>可选 PDF 导出</h2><p class="muted">导出整个筛选结果，不只是本页。最多 500 条，超过时请缩小条件。导出含未核验提示，仅私下自阅，不会公开或自动发送。</p><form method="post" action="{{ url_for('information_reader.export') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{{ hidden_filters(filters) }}<button class="button button-secondary" type="submit" {% if not total %}disabled{% endif %}>导出全部 {{ total }} 条匹配记录</button></form></section>
+</div>
+{% endblock %}

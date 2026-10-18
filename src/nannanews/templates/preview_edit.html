@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+{% block title %}刊物预览 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page" data-issue-preview>
+  <header class="page-header"><div><p class="eyebrow">编辑工作台</p><h1>刊物内容预览</h1><p class="muted">按刊载日期查看已批准并公开的条目。预览只使用具名公开 DTO，不读取草稿或内部记录。</p></div><a class="button button-secondary" href="{{ url_for('main') }}">返回工作台</a></header>
+  <form id="issue-form" class="filter-panel"><div class="form-field"><label for="date-input">刊载日期</label><input id="date-input" type="date" required></div><button class="button" type="submit">加载本期</button></form>
+  <p id="feed-status" class="notice" role="status" aria-live="polite">选择日期以查看本期公开内容。</p>
+  <section id="issue-meta" class="panel" hidden></section>
+  <section id="deadlines" class="panel deadline-panel" hidden><h2>截止日期</h2><ul class="deadline-list"></ul></section>
+  <section id="issue-entries" class="news-grid" aria-live="polite"></section>
+  <nav id="issue-pagination" class="pagination" aria-label="预览分页" hidden></nav>
+  <p class="reader-tools"><a href="{{ url_for('public_reader.index') }}">打开公开读者</a></p>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const form = document.getElementById('issue-form');
+  const dateInput = document.getElementById('date-input');
+  const status = document.getElementById('feed-status');
+  const entriesContainer = document.getElementById('issue-entries');
+  const meta = document.getElementById('issue-meta');
+  const deadlinesPanel = document.getElementById('deadlines');
+  const pageNav = document.getElementById('issue-pagination');
+  const reviewPrefix = {{ url_for('review', entry_id=0)|tojson }}.replace(/0$/, '');
+  let currentDate = '';
+  let currentPage = 1;
+
+  function addText(parent, tag, text, className) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = text || '';
+    parent.append(element);
+    return element;
+  }
+  function makeLink(parent, label, href, className) {
+    const link = document.createElement('a');
+    link.textContent = label;
+    link.href = href;
+    if (className) link.className = className;
+    parent.append(link);
+    return link;
+  }
+  function render(payload) {
+    entriesContainer.replaceChildren();
+    meta.replaceChildren();
+    const heading = addText(meta, 'h2', `${currentDate} · ${payload.total} 条消息`);
+    heading.className = 'results-summary';
+    meta.hidden = false;
+    status.className = 'notice';
+    status.textContent = payload.total ? `当前第 ${payload.page} 页，共 ${payload.pages} 页。这里只包含已批准刊发的消息。` : '该日期暂无已批准刊发的消息。';
+    const dueItems = payload.entries.filter((entry) => entry.due_time);
+    deadlinesPanel.hidden = dueItems.length === 0;
+    const deadlineList = deadlinesPanel.querySelector('ul');
+    deadlineList.replaceChildren();
+    dueItems.forEach((entry) => {
+      const row = document.createElement('li');
+      addText(row, 'time', String(entry.due_time).slice(0, 10));
+      makeLink(row, entry.title, `${reviewPrefix}${entry.id}`);
+      deadlineList.append(row);
+    });
+    payload.entries.forEach((entry) => {
+      const card = document.createElement('article');
+      card.className = 'news-card';
+      const content = document.createElement('div');
+      content.className = 'card-content';
+      const info = document.createElement('div');
+      info.className = 'card-meta';
+      addText(info, 'span', entry.tag || '活动消息', 'status-badge');
+      addText(info, 'time', entry.publish_date);
+      content.append(info);
+      makeLink(content, entry.title, `${reviewPrefix}${entry.id}`, 'editor-entry-title');
+      if (entry.description) addText(content, 'p', entry.description, 'card-description');
+      if (entry.due_time) addText(content, 'p', `截止：${String(entry.due_time).slice(0, 10)}`, 'deadline-line');
+      if (entry.source_url) makeLink(content, '查看原文 ↗', entry.source_url, 'text-link');
+      if (entry.lecture_data?.schedule) {
+        const schedule = entry.lecture_data.schedule;
+        addText(content, 'p', `讲座：${schedule.date || ''} ${schedule.start_time || ''}${entry.lecture_data.venue ? ` · ${entry.lecture_data.venue}` : ''}`, 'muted');
+      }
+      card.append(content);
+      entriesContainer.append(card);
+    });
+    pageNav.replaceChildren();
+    pageNav.hidden = payload.pages <= 1;
+    if (payload.pages > 1) {
+      const addPageButton = (label, page, disabled) => {
+        if (disabled) {
+          const span = addText(pageNav, 'span', label, 'button button-disabled');
+          span.setAttribute('aria-disabled', 'true');
+        } else {
+          const button = addText(pageNav, 'button', label, 'button button-secondary');
+          button.type = 'button';
+          button.addEventListener('click', () => load(page));
+        }
+      };
+      addPageButton('上一页', currentPage - 1, currentPage <= 1);
+      addText(pageNav, 'span', `第 ${payload.page} / ${payload.pages} 页`);
+      addPageButton('下一页', currentPage + 1, currentPage >= payload.pages);
+    }
+  }
+  async function load(page = 1) {
+    currentPage = page;
+    status.className = 'notice';
+    status.textContent = '正在加载…';
+    entriesContainer.replaceChildren();
+    deadlinesPanel.hidden = true;
+    const params = new URLSearchParams({ date: currentDate, page: String(page), per_page: '50' });
+    try {
+      const response = await fetch(`/api/entries?${params}`, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error('公开消息加载失败');
+      const payload = await response.json();
+      if (!Array.isArray(payload.entries)) throw new Error('公开消息格式不可用');
+      render(payload);
+    } catch (error) {
+      meta.hidden = true;
+      pageNav.hidden = true;
+      status.className = 'notice notice-error';
+      status.textContent = '无法加载该日期的消息，请检查日期或稍后重试。';
+    }
+  }
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!dateInput.value) return;
+    currentDate = dateInput.value;
+    load(1);
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "NannaNews"
+version = "0.1.0"
+description = "Campus information collection, editorial review and publication"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = [
+  "Flask==3.1.1",
+  "Werkzeug==3.1.3",
+  "Jinja2==3.1.6",
+  "MarkupSafe==3.0.2",
+  "itsdangerous==2.2.0",
+  "click==8.2.1",
+  "blinker==1.9.0",
+  "requests==2.32.4",
+  "charset-normalizer==3.4.2",
+  "idna==3.10",
+  "urllib3==2.5.0",
+  "certifi==2025.6.15",
+  "beautifulsoup4==4.13.4",
+  "soupsieve==2.7",
+  "typing_extensions==4.14.0",
+  "waitress==3.0.2",
+  "liteparse==2.14.4",
+  "Pillow==12.3.0",
+  "CairoSVG==2.9.1",
+  "cairocffi==1.7.1",
+  "cffi==2.0.0",
+  "pycparser==2.23",
+  "cssselect2==0.8.0",
+  "tinycss2==1.4.0",
+  "webencodings==0.5.1",
+  "defusedxml==0.7.1",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==8.4.1",
+  "iniconfig==2.1.0",
+  "packaging==25.0",
+  "pluggy==1.6.0",
+  "Pygments==2.19.2",
+]
+
+[project.scripts]
+nannanews = "nannanews.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nannanews = ["*.typ", "data/*.json", "templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

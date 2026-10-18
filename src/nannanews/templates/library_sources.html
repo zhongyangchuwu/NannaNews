@@ -1,0 +1,507 @@
+{% extends 'base.html' %}
+{% from 'reader_macros.html' import date_value %}
+
+{% block title %}来源与覆盖 | 信息库{% endblock %}
+
+{% block content %}
+{% set run_status_labels = {
+  'success': '成功',
+  'complete': '已完成',
+  'completed': '已完成',
+  'no_change': '本轮无变化',
+  'partial': '部分完成',
+  'failed': '失败',
+  'running': '运行中',
+  'interrupted': '已中断'
+} %}
+
+{% macro task_summary(title, run, status, unknown_pending, no_run_note) %}
+<article class="run-card">
+  <div class="run-card-header">
+    <div>
+      <h3>{{ title }}</h3>
+      <p class="section-note">独立显示本模式最近一次任务与待处理数量。</p>
+    </div>
+    {% if run %}
+    <span class="status-badge {% if run.status in ['success', 'complete', 'completed', 'no_change'] %}status-success{% elif run.status == 'failed' %}status-error{% elif run.status in ['partial', 'interrupted'] %}status-unverified{% else %}status-neutral{% endif %}">
+      {{ run_status_labels.get(run.status, run.status or '未知') }}
+    </span>
+    {% else %}
+    <span class="status-badge status-neutral">尚无任务</span>
+    {% endif %}
+  </div>
+
+  {% if run or status.sources %}
+  <p class="section-note">待处理</p>
+  <p class="metric-value">{{ status.pending }} <span>条</span></p>
+  {% else %}
+  <p class="section-note">{{ unknown_pending }}</p>
+  {% endif %}
+
+  <dl class="run-meta">
+    <div>
+      <dt>任务编号</dt>
+      <dd>{% if run %}#{{ run.id }}{% else %}尚无记录{% endif %}</dd>
+    </div>
+    <div>
+      <dt>开始时间</dt>
+      <dd>{{ date_value(run.started_at if run else none, with_time=true, empty='尚无记录') }}</dd>
+    </div>
+    <div>
+      <dt>结束时间</dt>
+      <dd>{{ date_value(run.finished_at if run else none, with_time=true, empty='尚未结束') }}</dd>
+    </div>
+  </dl>
+
+  {% if run and run.status == 'running' %}
+  <p class="section-note">任务仍在运行，当前台账可能尚未完成。</p>
+  {% elif not run %}
+  <p class="section-note">{{ no_run_note }}</p>
+  {% endif %}
+
+  {% if status.coverage_gaps %}
+  <details class="diagnostics">
+    <summary>查看覆盖缺口 / 部分完成（{{ status.coverage_gaps|length }}）</summary>
+    <ul>
+      {% for gap in status.coverage_gaps %}
+      <li>{{ gap }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</article>
+{% endmacro %}
+
+<div class="page-stack">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">私有采集状态</p>
+      <h1>来源、覆盖与处理台账</h1>
+      <p class="muted">新内容每日扫描与历史活动处理分开显示；历史活动待处理不会影响新内容扫描完成度。仅经验证且启用的列表构成自动采集覆盖。</p>
+    </div>
+    <div class="section-actions">
+      <a class="button button-secondary" href="{{ url_for('information_reader.index') }}">返回信息库</a>
+    </div>
+  </header>
+
+  <section aria-labelledby="run-status-heading">
+    <header class="section-header">
+      <div>
+        <h2 id="run-status-heading">新内容与历史活动任务状态</h2>
+        <p class="section-note">两种处理模式分别汇总；时间与状态分开显示，完整失败原因可展开查看。</p>
+      </div>
+    </header>
+    <div class="run-grid">
+      {{ task_summary(
+        '新内容扫描', new_run, new_status,
+        '新内容待处理数尚不可知（尚无运行台账）。',
+        '尚无新内容任务记录，不能据此断言来源完整。'
+      ) }}
+      {{ task_summary(
+        '历史活动处理', history_run, history_status,
+        '历史活动待处理数尚不可知（尚无运行台账）。',
+        '尚无历史活动处理任务记录；空台账不表示历史来源没有活动链接。'
+      ) }}
+    </div>
+
+    <details class="diagnostics">
+      <summary>旧混合任务（历史记录，不代表任一模式的完成度）</summary>
+      <p class="section-note">以下旧任务可能同时包含新内容和历史活动，仅作历史记录；不代表任一模式的完成度。</p>
+      {% if legacy_run %}
+      <dl class="run-meta">
+        <div>
+          <dt>任务状态</dt>
+          <dd>{{ run_status_labels.get(legacy_run.status, legacy_run.status or '未知') }}</dd>
+        </div>
+        <div>
+          <dt>任务编号</dt>
+          <dd>#{{ legacy_run.id }}</dd>
+        </div>
+        <div>
+          <dt>开始时间</dt>
+          <dd>{{ date_value(legacy_run.started_at, with_time=true, empty='尚无记录') }}</dd>
+        </div>
+        <div>
+          <dt>结束时间</dt>
+          <dd>{{ date_value(legacy_run.finished_at, with_time=true, empty='尚未结束') }}</dd>
+        </div>
+      </dl>
+      {% else %}
+      <p class="section-note">尚无旧混合任务记录。</p>
+      {% endif %}
+    </details>
+  </section>
+
+  <section class="panel" aria-labelledby="ledger-heading">
+    <header class="section-header">
+      <div>
+        <h2 id="ledger-heading">{{ '新内容' if mode == 'new' else '历史活动' }}逐项处理台账</h2>
+        <p class="section-note">显示当前模式的逐项结果；空台账本身不表示全部处理成功。</p>
+      </div>
+      <nav class="mode-tabs" aria-label="处理模式">
+        {% if mode == 'new' %}
+        <span class="button button-disabled" aria-current="page">新内容</span>
+        {% else %}
+        <a class="button button-secondary" href="{{ url_for('information_reader.sources', mode='new') }}">新内容</a>
+        {% endif %}
+        {% if mode == 'history' %}
+        <span class="button button-disabled" aria-current="page">历史活动</span>
+        {% else %}
+        <a class="button button-secondary" href="{{ url_for('information_reader.sources', mode='history') }}">历史活动</a>
+        {% endif %}
+      </nav>
+    </header>
+
+    <form class="ledger-filters" method="get" action="{{ url_for('information_reader.sources') }}" role="search" aria-label="筛选处理台账">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <input type="hidden" name="per_page" value="{{ per_page }}">
+      <div class="form-field">
+        <label for="ledger-source">来源</label>
+        <select id="ledger-source" name="source_id">
+          <option value="">全部来源</option>
+          {% for source in sources %}
+          <option value="{{ source.id }}" {% if source_id == source.id %}selected{% endif %}>{{ source.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="ledger-state">处理状态</label>
+        <select id="ledger-state" name="state">
+          <option value="">全部状态</option>
+          {% for value, label in state_options %}
+          <option value="{{ value }}" {% if state == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="button" type="submit">筛选</button>
+        <a class="button button-quiet" href="{{ url_for('information_reader.sources', mode=mode) }}">清除筛选</a>
+      </div>
+    </form>
+
+    {% if ledger_items %}
+    <div class="table-panel">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="活动来源链接处理台账">
+        <table class="data-table ledger-table">
+          <colgroup>
+            <col class="column-time">
+            <col class="column-content">
+            <col class="column-state">
+            <col class="column-message">
+            <col class="column-actions">
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">处理时间 / 最近检查</th>
+              <th scope="col">来源与活动</th>
+              <th scope="col">处理结果</th>
+              <th scope="col">原因</th>
+              <th scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in ledger_items %}
+            <tr>
+              <td>
+                {% if item.processed_at %}
+                <small class="cell-secondary">终态处理时间</small>
+                {{ date_value(item.processed_at, with_time=true, empty='尚无记录') }}
+                {% elif item.checked_at %}
+                <small class="cell-secondary">尚无终态；最近检查</small>
+                {{ date_value(item.checked_at, with_time=true, empty='尚无检查记录') }}
+                {% else %}
+                <small class="cell-secondary">尚未完成</small>
+                {% endif %}
+              </td>
+              <td>
+                <strong class="cell-title">{{ item.source_name or item.source_id or '未知来源' }}</strong>
+                <span class="cell-secondary">{{ item.title or '未能读取标题' }}</span>
+              </td>
+              <td>
+                <span class="status-badge {% if (item.processing_status or item.state) in ['failed', 'fetch_failed', 'model_failed'] %}status-error{% elif (item.processing_status or item.state) in ['uncertain', 'model_uncertain'] %}status-unverified{% elif (item.processing_status or item.state) in ['success', 'complete', 'completed', 'no_change', 'processed'] %}status-success{% else %}status-neutral{% endif %}">
+                  {{ item.processing_label or item.processing_status or item.state or '未知' }}
+                </span>
+                <details class="diagnostics">
+                  <summary>状态详情</summary>
+                  <dl class="run-meta">
+                    <div>
+                      <dt>处理状态</dt>
+                      <dd>{{ item.processing_status or '—' }}</dd>
+                    </div>
+                    <div>
+                      <dt>来源状态</dt>
+                      <dd>{{ item.state or '—' }}</dd>
+                    </div>
+                  </dl>
+                </details>
+              </td>
+              <td>
+                {% if item.message %}
+                <details class="diagnostics">
+                  <summary>查看完整原因</summary>
+                  <div class="preserve-lines">{{ item.message }}</div>
+                </details>
+                {% else %}
+                <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                <div class="cell-actions" aria-label="来源与记录操作">
+                  {% if item.url %}
+                  <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">打开原始来源 ↗</a>
+                  {% else %}
+                  <span class="muted">无安全原文链接</span>
+                  {% endif %}
+                  {% if item.record_id %}
+                  <a href="{{ url_for('information_reader.detail', record_id=item.record_id) }}">查看记录 #{{ item.record_id }}</a>
+                  {% else %}
+                  <span class="muted">暂无可查看记录</span>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% else %}
+    <section class="empty-state">
+      <h3>当前没有可显示的处理记录</h3>
+      {% if source_id or state %}
+      <p>没有符合当前来源和状态筛选条件的活动来源链接。</p>
+      {% elif not status.last_run %}
+      <p>{% if mode == 'history' %}尚无历史活动任务台账；这不表示历史来源中没有活动链接。{% else %}尚无新内容扫描台账；这不表示来源列表没有新内容。{% endif %}</p>
+      {% elif status.last_run.status == 'running' %}
+      <p>当前任务仍在运行，尚无可显示的处理结果；台账可能尚未完成。</p>
+      {% else %}
+      <p>此模式尚无已记录的活动来源链接处理结果。任务状态见上方；空台账本身不表示全部处理成功。</p>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    {% if ledger_pages > 1 %}
+    <nav class="pagination" aria-label="处理台账分页">
+      {% if ledger_page > 1 %}
+      <a class="button button-secondary" href="{{ previous_url }}">上一页</a>
+      {% else %}
+      <span class="button button-disabled" aria-disabled="true">上一页</span>
+      {% endif %}
+      <span aria-current="page">第 {{ ledger_page }} / {{ ledger_pages }} 页 · 共 {{ ledger_total }} 条</span>
+      {% if ledger_page < ledger_pages %}
+      <a class="button button-secondary" href="{{ next_url }}">下一页</a>
+      {% else %}
+      <span class="button button-disabled" aria-disabled="true">下一页</span>
+      {% endif %}
+    </nav>
+    {% elif ledger_total %}
+    <p class="muted">共 {{ ledger_total }} 条</p>
+    {% endif %}
+  </section>
+
+  <section class="panel" aria-labelledby="directory-heading">
+    <header class="section-header">
+      <div>
+        <h2 id="directory-heading">名单逐项覆盖</h2>
+        <p class="section-note">目录共 {{ directory|length }} 个不同名称。关联官网的可用性不等同于微信公众号文章列表接入。</p>
+      </div>
+    </header>
+    <dl class="source-metrics">
+      <div>
+        <dt>关联官网已启用</dt>
+        <dd>{{ directory_counts.website_enabled }}</dd>
+      </div>
+      <div>
+        <dt>关联栏目待验证</dt>
+        <dd>{{ directory_counts.website_pending }}</dd>
+      </div>
+      <div>
+        <dt>资料链接已检查</dt>
+        <dd>{{ directory_counts.reference_checked }}</dd>
+      </div>
+      <div>
+        <dt>尚无已验证自动入口</dt>
+        <dd>{{ directory_counts.no_entry }}</dd>
+      </div>
+    </dl>
+    <p class="section-note">关联官网只能补充该单位公开信息，不等于已订阅对应微信公众号。只有名称或微信号、没有公开文章列表的账号，不计作自动覆盖；缺入口与读取失败也不等同于已测试可用。</p>
+
+    <details>
+      <summary>查看全部名单及接入状态（{{ directory|length }}）</summary>
+      <div class="source-grid">
+        {% for entry in directory %}
+        <article class="source-card">
+          <h3>{{ entry.name }}</h3>
+          <p>
+            <span class="status-badge {% if entry.coverage == 'website_enabled' %}status-success{% else %}status-unverified{% endif %}">
+              {{ {
+                'website_enabled': '关联官网已启用，公众号动态未接入',
+                'website_pending': '关联官网尚待验证',
+                'reference_checked': '资料链接已检查，未建立自动栏目',
+                'no_entry': '尚无已验证公开自动入口'
+              }.get(entry.coverage, '覆盖状态未知') }}
+            </span>
+          </p>
+          <dl class="source-metrics">
+            <div>
+              <dt>关联单位</dt>
+              <dd>{{ entry.unit or '未知' }}</dd>
+            </div>
+            <div>
+              <dt>名单出处</dt>
+              <dd>{{ entry.workbook_count }} 份</dd>
+            </div>
+          </dl>
+          {% if entry.channels %}
+          <ul class="source-links">
+            {% for channel in entry.channels %}
+            <li>
+              <a href="{{ channel.url }}" target="_blank" rel="noopener noreferrer">{{ channel.name }}</a>
+              · {{ '已启用' if channel.enabled and channel.status == 'verified' else '待核验或不可用' }}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if entry.references %}
+          <ul>
+            {% for reference in entry.references %}
+            <li>
+              <p>{{ reference.message or '历史资料链接尚未验证为发布者栏目。' }}</p>
+              {% if reference.last_checked_at %}
+              <p><small class="cell-secondary">检查时间</small> {{ date_value(reference.last_checked_at, with_time=true, empty='尚无检查记录') }}</p>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+    </details>
+  </section>
+
+  <section class="panel" aria-labelledby="sources-heading">
+    <header class="section-header">
+      <div>
+        <h2 id="sources-heading">公开栏目与资料链接的运行状态</h2>
+        <p class="section-note">显示当前模式的来源配置、最近检查与完整采集计数。</p>
+      </div>
+    </header>
+    {% if sources %}
+    <details>
+      <summary>查看全部来源及运行状态（{{ sources|length }}）</summary>
+      <div class="source-grid">
+        {% for source in sources %}
+        <article class="source-card">
+          <h3>{{ source.name }}</h3>
+          <dl class="run-meta">
+            <div>
+              <dt>来源状态</dt>
+              <dd>
+                <span class="status-badge {% if source.status == 'verified' %}status-success{% elif source.status == 'failed' %}status-error{% else %}status-unverified{% endif %}">
+                  {{ {
+                    'verified': '已验证',
+                    'failed': '验证失败',
+                    'unsupported': '不支持自动采集',
+                    'pending_validation': '等待验证'
+                  }.get(source.status, source.status or '未知') }}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>启用状态</dt>
+              <dd>{{ '已启用' if source.enabled else '未启用' }}</dd>
+            </div>
+            <div>
+              <dt>发布院系</dt>
+              <dd>{{ source.publisher_college or '未知' }}</dd>
+            </div>
+            <div>
+              <dt>最近检查</dt>
+              <dd>{{ date_value(source.last_checked_at, with_time=true, empty='尚无记录') }}</dd>
+            </div>
+            <div>
+              <dt>最近成功</dt>
+              <dd>{{ date_value(source.last_success_at, with_time=true, empty='尚无记录') }}</dd>
+            </div>
+          </dl>
+
+          {% if source.message %}
+          <p class="preserve-lines">{{ source.message }}</p>
+          {% endif %}
+
+          {% if source.collection %}
+          {% set run = source.collection %}
+          <h4>{{ '新内容' if mode == 'new' else '历史活动' }}采集</h4>
+          <dl class="run-meta">
+            <div>
+              <dt>采集状态</dt>
+              <dd>{{ run_status_labels.get(run.status, run.status or '未知') }}</dd>
+            </div>
+          </dl>
+          {% if run.message %}
+          <p class="preserve-lines">{{ run.message }}</p>
+          {% endif %}
+          <dl class="source-metrics">
+            <div>
+              <dt>发现</dt>
+              <dd>{{ run.discovered }}</dd>
+            </div>
+            <div>
+              <dt>抓取</dt>
+              <dd>{{ run.fetched }}</dd>
+            </div>
+            <div>
+              <dt>提取</dt>
+              <dd>{{ run.extracted }}</dd>
+            </div>
+            <div>
+              <dt>跳过</dt>
+              <dd>{{ run.skipped }}</dd>
+            </div>
+            <div>
+              <dt>失败</dt>
+              <dd>{{ run.failed }}</dd>
+            </div>
+            <div>
+              <dt>文章待处理</dt>
+              <dd>{{ run.pending }}</dd>
+            </div>
+            <div>
+              <dt>列表页待处理</dt>
+              <dd>{{ run.pending_pages }}</dd>
+            </div>
+            <div>
+              <dt>因配置变更暂停</dt>
+              <dd>{{ run.paused_by_configuration|default(0) }}</dd>
+            </div>
+            <div>
+              <dt>历史原文暂缓提取</dt>
+              <dd>{{ run.history_deferred|default(0) }}</dd>
+            </div>
+            <div>
+              <dt>模型失败或结果未确认</dt>
+              <dd>{{ run.model_failures|default(0) }}</dd>
+            </div>
+            <div>
+              <dt>不允许访问</dt>
+              <dd>{{ run.disallowed|default(0) }}</dd>
+            </div>
+          </dl>
+          {% else %}
+          <p class="section-note">该模式尚无来源采集任务记录。</p>
+          {% endif %}
+          <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">查看来源列表 ↗</a>
+        </article>
+        {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    <section class="empty-state">
+      <h3>尚未配置来源</h3>
+      <p>当前无可声明的自动采集覆盖；已有人工或历史记录仍可在信息库查询。</p>
+    </section>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

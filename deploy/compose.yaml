@@ -1,0 +1,77 @@
+name: nannanews
+
+services:
+  web:
+    image: ${NANNA_ACTIVE_IMAGE:?Set the active versioned image in .env.active}
+    init: true
+    restart: unless-stopped
+    user: "10001:10001"
+    ports:
+      - "${NANNA_BIND_ADDRESS:-127.0.0.1}:${NANNA_PORT:-8080}:8080"
+    volumes:
+      - nanna-data:/data
+      - type: bind
+        source: "${NANNA_BACKUP_DIR:?Set NANNA_BACKUP_DIR on the deployment host}"
+        target: /backups
+        bind:
+          create_host_path: false
+    environment: &runtime_environment
+      NANNA_DATA_DIR: ${NANNA_ACTIVE_DATA_DIR:?Set the active sibling data root in .env.active}
+      NANNA_HOST: 0.0.0.0
+      NANNA_PORT: 8080
+      NANNA_SITE_NAME: ${NANNA_SITE_NAME:-公共消息}
+      NANNA_PUBLIC_URL: ${NANNA_PUBLIC_URL:-http://127.0.0.1:8080}
+      NANNA_SECRET_KEY: ${NANNA_SECRET_KEY:-}
+      NANNA_SESSION_COOKIE_SECURE: ${NANNA_SESSION_COOKIE_SECURE:-false}
+      NANNA_QQ_GROUP_URL: ${NANNA_QQ_GROUP_URL:-}
+      NANNA_QQ_GROUP_LABEL: ${NANNA_QQ_GROUP_LABEL:-订阅}
+      NANNA_PDF_PARSER_BINARY: ${NANNA_PDF_PARSER_BINARY:-lit}
+      NANNA_MODEL_BASE_URL: ${NANNA_MODEL_BASE_URL:-}
+      NANNA_MODEL_API_KEY: ${NANNA_MODEL_API_KEY:-}
+      NANNA_MODEL_NAME: ${NANNA_MODEL_NAME:-gpt-6-luna}
+      NANNA_MODEL_TIMEOUT: ${NANNA_MODEL_TIMEOUT:-90}
+      NANNA_MODEL_API_STYLE: ${NANNA_MODEL_API_STYLE:-responses}
+      NANNA_COLLECTION_ENABLED: ${NANNA_COLLECTION_ENABLED:-false}
+      NANNA_COLLECTION_TIME: ${NANNA_COLLECTION_TIME:-04:00}
+      NANNA_COLLECTION_PAGE_LIMIT: ${NANNA_COLLECTION_PAGE_LIMIT:-10}
+      NANNA_COLLECTION_FETCH_WORKERS: ${NANNA_COLLECTION_FETCH_WORKERS:-1}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=3).read(1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+  collection:
+    image: ${NANNA_ACTIVE_IMAGE:?Set the active versioned image in .env.active}
+    init: true
+    restart: unless-stopped
+    user: "10001:10001"
+    profiles: [collection]
+    command: [collect-worker]
+    environment: *runtime_environment
+    volumes:
+      - nanna-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    healthcheck:
+      disable: true
+volumes:
+  nanna-data:
+    name: ${NANNA_DATA_VOLUME:-nannanews_nanna-data}
+    external: true

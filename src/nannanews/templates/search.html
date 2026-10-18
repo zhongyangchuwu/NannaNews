@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}搜索工作条目 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page page-stack">
+  <header class="page-header"><div><p class="eyebrow">编辑工作台</p><h1>搜索条目</h1><p class="muted">搜索未刊发的编辑记录。</p></div><a class="button button-secondary" href="{{ url_for('main') }}">返回工作台</a></header>
+  <form class="filter-panel" method="get" action="{{ url_for('search') }}" role="search">
+    <div class="form-field"><label for="q">标题或正文</label><input id="q" type="search" name="q" value="{{ query }}" required></div>
+    <div class="filter-actions"><button class="button" type="submit">搜索</button></div>
+  </form>
+  {% if query %}
+  <h2 id="search-results-heading">“{{ query }}”的搜索结果</h2>
+  {% if results %}
+  <div class="table-panel">
+    <div class="table-scroll" tabindex="0" role="region" aria-labelledby="search-results-heading">
+      <table class="data-table search-table">
+        <colgroup><col class="column-content"><col class="column-description"><col class="column-actions"></colgroup>
+        <thead><tr><th scope="col">标题</th><th scope="col">正文摘要</th><th scope="col">来源</th></tr></thead>
+        <tbody>{% for entry in results %}<tr><td><a href="{{ url_for('review', entry_id=entry[0]) }}">{{ entry[3] }}</a></td><td class="preserve-lines">{{ entry[5] or '' }}</td><td>{% if entry[4] and (entry[4].startswith('http://') or entry[4].startswith('https://')) %}<a href="{{ entry[4] }}" target="_blank" rel="noopener noreferrer">打开原文</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
+      </table>
+    </div>
+  </div>
+  <nav class="pagination" aria-label="搜索结果分页">
+    {% if page > 1 %}<a class="button button-secondary" href="{{ url_for('search', q=query, page=page-1) }}">上一页</a>{% else %}<span class="button button-disabled">上一页</span>{% endif %}
+    <span>第 {{ page }} / {{ total_pages }} 页</span>
+    {% if page < total_pages %}<a class="button button-secondary" href="{{ url_for('search', q=query, page=page+1) }}">下一页</a>{% else %}<span class="button button-disabled">下一页</span>{% endif %}
+  </nav>
+  {% else %}<section class="empty-state"><h2>没有找到匹配条目</h2><p>尝试更短的关键词。</p></section>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

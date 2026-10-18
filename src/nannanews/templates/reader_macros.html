@@ -1,0 +1,52 @@
+{% macro filters_form(filters, options, action) %}
+<form class="filter-panel library-filters" method="get" action="{{ action }}" role="search" aria-label="筛选信息">
+  <div class="form-field"><label for="filter-q">关键词</label><input id="filter-q" name="q" type="search" value="{{ filters.q }}" maxlength="200" placeholder="标题、说明或原文中的短语"></div>
+  <div class="form-field"><label for="filter-date-type">日期含义</label><select id="filter-date-type" name="date_type">{% for value,label in [('source','原文发布日期'),('event','活动日期'),('deadline','截止日期'),('publication','本站刊载日期')] %}<option value="{{ value }}" {% if filters.date_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <div class="form-field"><label for="filter-from">起始日期</label><input id="filter-from" name="date_from" type="date" value="{{ filters.date_from or '' }}"></div>
+  <div class="form-field"><label for="filter-to">结束日期</label><input id="filter-to" name="date_to" type="date" value="{{ filters.date_to or '' }}"></div>
+  <div class="form-field"><label for="filter-college">院系（可多选）</label><select id="filter-college" name="college" multiple size="3">{% for college in options.colleges %}<option value="{{ college }}" {% if college in filters.colleges %}selected{% endif %}>{{ college }}</option>{% endfor %}</select></div>
+  <div class="form-field"><label for="filter-relation">院系关系</label><select id="filter-relation" name="college_relation">{% for value,label in [('any','任意关系'),('publisher','发布院系'),('associated','相关院系'),('audience','面向院系')] %}<option value="{{ value }}" {% if filters.college_relation == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <div class="form-field"><label for="filter-source">来源（可多选）</label><select id="filter-source" name="source" multiple size="3">{% for source in options.sources %}<option value="{{ source.id }}" {% if source.id in filters.sources %}selected{% endif %}>{{ source.name }}</option>{% endfor %}</select></div>
+  <div class="form-field"><label for="filter-tag">类别（可多选）</label><select id="filter-tag" name="tag" multiple size="3">{% for tag in options.tags %}<option value="{{ tag }}" {% if tag in filters.tags %}selected{% endif %}>{{ tag }}</option>{% endfor %}</select></div>
+  <div class="filter-actions"><button class="button" type="submit">筛选</button><a class="button button-quiet" href="{{ action }}">清除筛选</a></div>
+  <p class="filter-help muted">多个院系或来源分别匹配任一选项，不同筛选条件共同生效。日期未知的记录不匹配日期范围；清除筛选可查看全部可见记录。多选可使用 Ctrl / Command。</p>
+  {% if filters.q or filters.date_from or filters.date_to or filters.colleges or filters.sources or filters.tags %}<div class="filter-help active-filters" aria-label="当前生效的筛选"><strong>生效条件：</strong>{% if filters.q %}<span>关键词 “{{ filters.q }}”</span>{% endif %}{% if filters.date_from or filters.date_to %}<span>日期 {{ filters.date_from or '不限起始' }} 至 {{ filters.date_to or '不限结束' }}</span>{% endif %}{% if filters.colleges %}<span>院系 {{ filters.colleges|join('、') }} · {{ filters.college_relation }}</span>{% endif %}{% if filters.sources %}<span>来源 {{ filters.sources|join('、') }}</span>{% endif %}{% if filters.tags %}<span>类别 {{ filters.tags|join('、') }}</span>{% endif %}</div>{% endif %}
+</form>
+{% endmacro %}
+
+{% macro hidden_filters(filters) %}
+{% for key in ['q','date_type','date_from','date_to','college_relation'] %}<input type="hidden" name="{{ key }}" value="{{ filters[key] or '' }}">{% endfor %}
+{% for value in filters.colleges %}<input type="hidden" name="college" value="{{ value }}">{% endfor %}
+{% for value in filters.sources %}<input type="hidden" name="source" value="{{ value }}">{% endfor %}
+{% for value in filters.tags %}<input type="hidden" name="tag" value="{{ value }}">{% endfor %}
+{% endmacro %}
+
+{% macro date_value(value, with_time=false, empty='未知') -%}
+  {% set stamp = value|display_date %}
+  {% if stamp %}
+    <time class="date-value" datetime="{{ stamp.datetime }}">
+      <span class="date-value-date">{{ stamp.date }}</span>
+      {% if with_time and stamp.time %}<span class="date-value-clock">{{ stamp.time }}{% if stamp.zone %}<span class="date-value-zone">{{ stamp.zone }}</span>{% endif %}</span>{% endif %}
+    </time>
+  {% else %}
+    <span class="date-value-empty muted">{{ empty }}</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro metadata(record, compact=false) %}
+<dl class="detail-list record-metadata{% if compact %} record-metadata-compact{% endif %}">
+  {% for key,label in [('source_published_date','原文发布日期'),('event_date','活动日期'),('deadline_date','截止日期'),('publication_date','本站刊载日期')] %}
+  <div class="metadata-date"><dt>{{ label }}</dt><dd>{{ date_value(record[key]) }}</dd></div>
+  {% endfor %}
+  <div class="metadata-wide"><dt>来源</dt><dd>{{ record.source_name or '未知 / 未配置来源' }}</dd></div>
+  <div class="metadata-wide"><dt>院系及关系</dt><dd>{% for college in record.colleges %}{{ college.name }}（{{ {'publisher':'发布','associated':'相关','audience':'面向'}.get(college.relation, college.relation) }}）{% if not loop.last %}、{% endif %}{% else %}<span class="muted">未知</span>{% endfor %}</dd></div>
+</dl>
+{% endmacro %}
+
+{% macro pagination(page, pages, previous_url, next_url) %}
+{% if pages > 1 %}<nav class="pagination" aria-label="信息分页">
+  {% if page > 1 %}<a class="button button-secondary" href="{{ previous_url }}">上一页</a>{% else %}<span class="button button-disabled" aria-disabled="true">上一页</span>{% endif %}
+  <span aria-current="page">第 {{ page }} / {{ pages }} 页</span>
+  {% if page < pages %}<a class="button button-secondary" href="{{ next_url }}">下一页</a>{% else %}<span class="button button-disabled" aria-disabled="true">下一页</span>{% endif %}
+</nav>{% endif %}
+{% endmacro %}

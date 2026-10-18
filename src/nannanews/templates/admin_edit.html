@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}编辑条目 {{ entry[0] }} | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page">
+<header class="page-header"><div><p class="eyebrow">管理员</p><h1>编辑条目 #{{ entry[0] }}</h1><p class="muted">保存后撤回公开状态，须由另一位编辑重新审阅。</p></div><a class="button button-secondary" href="{{ url_for('admin') }}">返回管理</a></header>
+<form method="post" class="panel stack">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<p>提交者：{{ entry[1] }} · 提交时间：{{ entry[2] }} · 状态：{{ entry[9] }}</p>
+<div class="form-grid">
+<div class="form-field"><label for="title">标题</label><input id="title" name="title" value="{{ entry[3] }}" required></div>
+<div class="form-field"><label for="link">来源链接</label><input id="link" name="link" value="{{ entry[4] or '' }}"></div>
+<div class="form-field"><label for="due-time">截止时间</label><input id="due-time" type="date" name="due_time" value="{{ entry[8] or '' }}"></div>
+<div class="form-field"><label for="entry-type">类型</label><input id="entry-type" name="entry_type" value="{{ entry[10] }}" required></div>
+</div>
+<div class="form-field"><label for="description">正文</label><textarea id="description" name="description" rows="8">{{ entry[5] or '' }}</textarea></div>
+<div class="article-actions"><button class="button" type="submit">保存修改并撤回</button><a class="button button-secondary" href="{{ url_for('admin') }}">取消</a></div>
+</form></section>
+{% endblock %}

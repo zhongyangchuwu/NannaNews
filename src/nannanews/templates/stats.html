@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block title %}工作统计 | {{ site_name|default('南哪小报') }}{% endblock %}
+{% block content %}
+<section class="editor-page page-stack">
+  <header class="page-header"><div><p class="eyebrow">编辑工作台</p><h1>工作统计</h1><p class="muted">最近五天的编辑活动汇总。</p></div><a class="button button-secondary" href="{{ url_for('main') }}">返回工作台</a></header>
+  <div class="news-grid">
+    {% for heading, rows in [('提交条目', uploader_stats), ('撰写条目', describer_stats), ('审核条目', reviewer_stats)] %}
+    <section class="panel">
+      <h2>{{ heading }}</h2>
+      {% if rows %}
+      <div class="table-scroll" tabindex="0" role="region" aria-label="{{ heading }}统计">
+        <table><thead><tr><th scope="col">账号</th><th scope="col" class="numeric">条目数</th></tr></thead><tbody>{% for user, count in rows %}<tr><td>{{ user }}</td><td class="numeric">{{ count }}</td></tr>{% endfor %}</tbody></table>
+      </div>
+      {% else %}<p class="muted">暂无统计数据。</p>{% endif %}
+    </section>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
