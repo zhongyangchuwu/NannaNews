@@ -1,0 +1,15 @@
+[Unit]
+Description=NannaNews local public reader
+
+[Service]
+Type=simple
+WorkingDirectory=%h/service/nannanews
+EnvironmentFile=%h/service/nannanews/config/reader.env
+ExecStart=/usr/bin/env ${NANNA_CODE_ROOT}/.venv/bin/python -m http.server ${NANNA_READER_PORT} --bind 127.0.0.1 --directory ${NANNA_READER_SITE_ROOT}
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

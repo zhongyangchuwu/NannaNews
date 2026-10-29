@@ -1,0 +1,81 @@
+# Independent from deploy/compose.yaml and its versioned release lifecycle.
+name: nannanews-review
+
+x-runtime: &runtime
+  image: nannanews-review:local
+  pull_policy: never
+  init: true
+  user: "10001:10001"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp:mode=1777
+
+services:
+  console:
+    <<: *runtime
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NANNA_REVIEW_CONSOLE_PORT:-4186}:8080"
+    environment:
+      NANNA_DATA_DIR: /data
+      NANNA_HOST: 0.0.0.0
+      NANNA_PORT: 8080
+      NANNA_SITE_NAME: ${NANNA_SITE_NAME:-公共消息}
+      NANNA_PUBLIC_URL: http://127.0.0.1:${NANNA_REVIEW_CONSOLE_PORT:-4186}
+      NANNA_SESSION_COOKIE_SECURE: "false"
+      NANNA_READER_DATA_DIR: /publication/source
+      NANNA_READER_SITE_DATA_DIR: /publication/site/data
+      NANNA_READER_SEARCH_BUILDER: /app/reader/scripts/build-search.mjs
+      NANNA_READER_URL: http://127.0.0.1:${NANNA_REVIEW_READER_PORT:-4184}/
+      # Optional container-local foundation root under the private /data mount.
+      NANNA_READER_EVIDENCE_DIR: ${NANNA_REVIEW_EVIDENCE_DIR:-}
+      # This local manual-review deployment never inherits model credentials.
+      NANNA_MODEL_API_KEY: ""
+      NANNA_MODEL_BASE_URL: ""
+      NANNA_COLLECTION_ENABLED: "false"
+    volumes:
+      - type: bind
+        source: ${NANNA_REVIEW_PRIVATE_DIR:?Set an existing independent private console directory}
+        target: /data
+        bind:
+          create_host_path: false
+      # One mount, not separate source/site mounts: publication uses hardlinks.
+      - type: bind
+        source: ${NANNA_REVIEW_PUBLIC_ROOT:?Set an existing public publication parent directory}
+        target: /publication
+        bind:
+          create_host_path: false
+
+  reader:
+    <<: *runtime
+    restart: unless-stopped
+    working_dir: /site
+    entrypoint: [python, -m, http.server]
+    command: ["8080", --bind, "0.0.0.0", --directory, /site]
+    ports:
+      - "127.0.0.1:${NANNA_REVIEW_READER_PORT:-4184}:8080"
+    volumes:
+      # Never mount the private runtime or even the publication parent here.
+      - type: bind
+        source: ${NANNA_REVIEW_PUBLIC_ROOT:?Set an existing public publication parent directory}/site
+        target: /site
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/data/manifest.json', timeout=3).read(1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

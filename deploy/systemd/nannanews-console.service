@@ -1,0 +1,15 @@
+[Unit]
+Description=NannaNews local editorial console
+
+[Service]
+Type=simple
+WorkingDirectory=%h/service/nannanews
+EnvironmentFile=%h/service/nannanews/config/console.env
+ExecStart=/usr/bin/env ${NANNA_CODE_ROOT}/.venv/bin/nannanews serve --host 127.0.0.1 --port ${NANNA_PORT}
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

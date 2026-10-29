@@ -1,3 +1,15 @@
+# Build frontend code without a public package; runtime data is staged explicitly.
+FROM node:22.14.0-bookworm-slim AS reader-build
+WORKDIR /reader
+COPY reader/package.json reader/package-lock.json ./
+RUN npm ci
+COPY reader/index.html reader/tsconfig.json reader/vite.config.ts ./
+COPY reader/src ./src
+RUN npm exec vite build
+
+FROM reader-build AS reader-runtime
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
 FROM ghcr.io/typst/typst:0.15.1 AS typst
 FROM python:3.12.11-slim-bookworm
 
@@ -8,10 +20,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 
 # These exact Debian font releases supply both CJK faces and link monospace.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl fontconfig libcairo2 poppler-utils util-linux \
+        ca-certificates curl fontconfig libcairo2 libatomic1 libstdc++6 poppler-utils util-linux \
         fonts-noto-cjk=1:20220127+repack1-1 fonts-dejavu-core=2.37-6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=typst /bin/typst /usr/local/bin/typst
+COPY --from=reader-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=reader-build /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 # Pin and pre-cache the imports used by the reviewed templates; rendering is offline.
 RUN set -eu; \
     for package in tiaoma:0.3.0 wrap-it:0.1.1; do \
@@ -28,7 +44,14 @@ RUN set -eu; \
     chmod -R a+rX /opt/typst
 
 WORKDIR /app
-COPY . ./
+COPY pyproject.toml README.md LICENSE ./
+COPY src/nannanews ./src/nannanews
+COPY reader/package.json reader/package-lock.json ./reader/
+COPY reader/scripts ./reader/scripts
+COPY reader/src/tokenize.mjs reader/src/review-validation.mjs ./reader/src/
+COPY --from=reader-runtime /reader/node_modules ./reader/node_modules
+COPY --from=reader-build /reader/dist /opt/nanna-reader-site
+COPY deploy/stage-reader.sh ./deploy/stage-reader.sh
 RUN pip install --no-cache-dir pip==25.1.1 \
     && pip install --no-cache-dir .
 RUN groupadd --gid 10001 nanna \
