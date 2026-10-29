@@ -2,10 +2,30 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stagePublicFacts } from './stage-public-facts.mjs';
 
 const target = fileURLToPath(new URL('../public/data/', import.meta.url));
-const input = process.argv[2] || process.env.STATIC_READER_DATA_SOURCE;
-if (!input || process.argv.length > 3) throw new Error('用法：npm run stage:data -- <公开导出目录或 manifest.json 的公开 HTTP(S) URL>');
+const args = process.argv.slice(2);
+const ifMissing = args[0] === '--if-missing';
+const sources = args.slice(ifMissing ? 1 : 0);
+if (sources.length > 1) throw new Error('用法：npm run stage:data -- [--if-missing] [公开导出目录或 manifest.json 的公开 HTTP(S) URL]');
+const input = sources[0] || process.env.STATIC_READER_DATA_SOURCE;
+if (input && !ifMissing && process.argv.length > 3 || input && ifMissing && process.argv.length > 4) {
+  throw new Error('用法：npm run stage:data -- [--if-missing] [公开导出目录或 manifest.json 的公开 HTTP(S) URL]');
+}
+try {
+  const existing = await lstat(target);
+  if (ifMissing && existing.isDirectory() && !existing.isSymbolicLink()) {
+    console.log(JSON.stringify({ output: 'public/data', staged: false, reason: 'already-exists' }));
+    process.exit(0);
+  }
+  throw new Error('目标 reader/public/data 已存在；为避免误删，不会自动替换。请使用空工作树构建或先移走已生成目录。');
+} catch (error) { if (error.code !== 'ENOENT') throw error; }
+if (!input) {
+  const result = await stagePublicFacts(target);
+  console.log(JSON.stringify({ ...result, output: 'public/data', source: 'activity-facts' }));
+  process.exit(0);
+}
 const remote = /^https?:\/\//i.test(input);
 const base = remote ? new URL(input) : null;
 if (base && (base.username || base.password || base.search || base.hash || !base.pathname.endsWith('/manifest.json'))) {
@@ -13,8 +33,6 @@ if (base && (base.username || base.password || base.search || base.hash || !base
 }
 const source = remote ? null : await realpath(path.resolve(input));
 if (source && (await lstat(path.resolve(input))).isSymbolicLink()) throw new Error('数据目录不能是符号链接。');
-try { await lstat(target); throw new Error('目标 reader/public/data 已存在；为避免误删，不会自动替换。请使用空工作树构建或先移走已生成目录。'); }
-catch (error) { if (error.code !== 'ENOENT') throw error; }
 const staging = `${target.replace(/\/$/, '')}.stage-${randomUUID()}`;
 const paths = new Set();
 let bytes = 0;
@@ -109,8 +127,9 @@ try {
       if (id !== item.id || !Array.isArray(item.occurrences)) throw new Error('消息分片标识无效。');
       itemCount++;
       occurrenceCount += item.occurrences.length;
-      for (const occurrence of item.occurrences) for (const image of occurrence.images) {
-        assets.set(safePath(image.path, version), 'image');
+      for (const occurrence of item.occurrences) {
+        for (const image of occurrence.images) assets.set(safePath(image.path, version), 'image');
+        for (const image of occurrence.primary_images ?? []) assets.set(safePath(image.path, version), 'image');
       }
     }
   });

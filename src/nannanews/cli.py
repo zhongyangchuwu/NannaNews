@@ -577,6 +577,8 @@ def main(argv=None):
     sub = commands.add_parser('export-static', help='Export only public bulletin fields and resources; no private editorial data or backend API')
     sub.add_argument('output', help='Static reader data directory')
     sub.add_argument('--replace', action='store_true', help='Replace only a previous marked static export')
+    sub.add_argument('--hold-occurrence-id', action='append', default=[],
+                     help='Withhold confirmed content and date filtering for the entire activity containing this public occurrence; repeatable')
     sub = commands.add_parser('prepare-bulletin-source', help='Bind an operator-reviewed source capture; no fetching or AI calls')
     sub.add_argument('--occurrence-id', required=True)
     sub.add_argument('--original-url', required=True)
@@ -617,6 +619,9 @@ def main(argv=None):
     sub = commands.add_parser('activity-candidates', help='Export public-only same-title or explicitly selected activity candidates to a private artifact')
     sub.add_argument('--output', required=True, help='New private output directory')
     sub.add_argument('--item-id', action='append', default=[], help='Select a cross-title candidate by public item ID; repeat at least twice')
+    sub = commands.add_parser('export-public-facts', help='Export small reviewed public facts for Git; no private runtime or cloud access')
+    sub.add_argument('source_dir', type=Path, help='Published public reader pack')
+    sub.add_argument('output', type=Path, help='Small activity-facts.json destination')
     foundation = commands.add_parser('data-foundation', help='Prepare and verify private activity data; never switch services or call models')
     foundation_actions = foundation.add_subparsers(dest='foundation_action', required=True)
     build = foundation_actions.add_parser('build', help='Import reviewed activity identities and offline original-source evidence')
@@ -669,13 +674,16 @@ def main(argv=None):
     compact.add_argument('--root', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        independent = {"migrate", "init-admin", "doctor", "backup", "restore", "parse-pdf", "import-source-catalog", "data-foundation"}
+        independent = {"migrate", "init-admin", "doctor", "backup", "restore", "parse-pdf", "import-source-catalog", "data-foundation", "export-public-facts"}
         if args.command not in independent:
             schema.require_schema()
         if args.command in {"collect", "collect-worker", "import-bulletins"}:
             runtime.prepare_runtime()
         if args.command == "migrate":
             print(f"Database schema is current (version {schema.migrate()})")
+        elif args.command == 'export-public-facts':
+            from nannanews.public_metadata_export import export_public_facts
+            print(json.dumps(export_public_facts(args.source_dir, args.output), ensure_ascii=False, indent=2))
         elif args.command == 'data-foundation':
             from nannanews import data_foundation
             root = args.root.expanduser().absolute()
@@ -822,7 +830,8 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == 'export-static':
             from nannanews import static_export
-            print(json.dumps(static_export.export_static(args.output, replace=args.replace),
+            print(json.dumps(static_export.export_static(args.output, replace=args.replace,
+                             held_occurrence_ids=args.hold_occurrence_id),
                              ensure_ascii=False, indent=2))
         elif args.command == 'prepare-bulletin-source':
             from nannanews import bulletin_source_repair

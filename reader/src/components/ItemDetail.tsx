@@ -1,10 +1,15 @@
 import { ArrowLeft, ArrowUpRight, Bookmark, BookmarkCheck, CalendarDays, ChevronDown, CircleHelp, Download, ExternalLink, FileText, ImageOff, MapPin, Paperclip } from 'lucide-react';
 import { Link } from 'react-router';
 import { readablePdfText } from '../reading-text';
-import type { ActivityCitation, ActivityField, ActivityReview, PublicCollege, PublicDate, PublicDocument, PublicOccurrence, ReaderState } from '../types';
+import type { ActivityCitation, ActivityField, ActivityReview, ManualActivity, PublicCollege, PublicDate, PublicDocument, PublicOccurrence, ReaderState } from '../types';
 import { Badge } from './badge';
 import { Button } from './button';
 import { DocumentEvidence } from './DocumentEvidence';
+import { ContentBadge, OccurrenceWarnings } from './OccurrenceList';
+import { ShareButton } from './ShareButton';
+import { itemSharePath } from '../sharing';
+import { participationUrl } from '../participation';
+import { confirmedActivityDate, hasVerifiedManualReview, manualPublicUrl } from '../filter';
 
 function safeHttpUrl(raw: string) {
   try {
@@ -40,6 +45,14 @@ function DateEvidence({ dates, emptyText, expandEvidence = false }: { dates: Pub
 }
 
 const ACTIVITY_DATE_KINDS: Record<string, true> = { event: true, deadline: true, registration: true, application: true };
+const ACTIVITY_DATE_LABELS: Record<string, string> = { event: '活动日期', deadline: '截止日期', registration: '报名日期', application: '申请／申报日期' };
+const DATE_PRIORITY: Record<string, number> = { deadline: 0, event: 1, registration: 2, application: 3 };
+
+function orderedActivityDates<T extends { kind: string; resolution?: string }>(dates: T[]): T[] {
+  return dates.sort((left, right) => (DATE_PRIORITY[left.kind] ?? 4) - (DATE_PRIORITY[right.kind] ?? 4)
+    || Number(left.resolution !== 'explicit') - Number(right.resolution !== 'explicit'));
+}
+
 interface DateClaimGroups { primary: PublicDate[]; contextualBulletin: PublicDate[]; reference: PublicDate[] }
 
 function groupDateClaims(claims: PublicDate[]): DateClaimGroups {
@@ -53,6 +66,7 @@ function groupDateClaims(claims: PublicDate[]): DateClaimGroups {
 }
 
 function currentActivity(occurrence: PublicOccurrence, state: ReaderState): ActivityReview | null {
+  if (occurrence.content_status !== 'verified') return null;
   const review = occurrence.date_review;
   const version = state.manifest?.content_rules_version;
   if (!review || !version || review.rules_version !== version || review.source_review.status !== 'source_verified') return null;
@@ -81,7 +95,6 @@ function ActivityTextField({ field, label }: { field: ActivityField; label: stri
   return <section className="activity-copy">
     <h3>{label}</h3>
     <p>{field.value ?? '尚未从已核验来源确认此项。'}</p>
-    <ActivityFieldEvidence field={field} label={label} />
   </section>;
 }
 
@@ -89,17 +102,122 @@ const ACTIVITY_FACT_FIELDS = [
   ['time', '活动时间'], ['venue', '地点'], ['organizer', '组织方'], ['audience', '面向对象'], ['participation', '参与方式'],
 ] as const;
 
-function ActivityFacts({ activity }: { activity: ActivityReview }) {
+function ActivityFacts({ activity, category, dates }: { activity: ActivityReview; category: string | null; dates: PublicDate[] }) {
+  const schedule = orderedActivityDates(dates.filter((date) => date.literal_source === 'primary'
+    && ACTIVITY_DATE_KINDS[date.kind] && date.normalized_date
+    && (date.resolution === 'explicit' || date.resolution === 'contextual')));
+  const fields = category === '招聘升学宣讲'
+    ? [ACTIVITY_FACT_FIELDS[0], ACTIVITY_FACT_FIELDS[3], ACTIVITY_FACT_FIELDS[4], ACTIVITY_FACT_FIELDS[1], ACTIVITY_FACT_FIELDS[2]]
+    : ACTIVITY_FACT_FIELDS;
   return <dl className="activity-facts">
-    {ACTIVITY_FACT_FIELDS.map(([key, label]) => {
-      const field = activity[key];
-      return <div className="activity-fact" key={key}>
-        <dt>{label}</dt>
-        <dd>{field.value ?? <span className="activity-unknown">尚未确认</span>}</dd>
-        <ActivityFieldEvidence field={field} label={label} />
-      </div>;
-    })}
+    {schedule.map((date, index) => <div className="activity-fact" key={`${date.kind}/${date.normalized_date}/${date.resolution}/${index}`}>
+      <dt>{ACTIVITY_DATE_LABELS[date.kind]}</dt><dd>{date.normalized_date}{date.resolution === 'contextual' && '（上下文推定）'}</dd>
+    </div>)}
+    {fields.map(([key, label]) => <div className="activity-fact" key={key}>
+      <dt>{label}</dt>
+      <dd>{activity[key].value ?? <span className="activity-unknown">尚未确认</span>}</dd>
+    </div>)}
   </dl>;
+}
+
+function ManualConfirmation({ occurrence }: { occurrence: PublicOccurrence }) {
+  const review = occurrence.manual_review;
+  if (!review) return null;
+  const verified = hasVerifiedManualReview(occurrence);
+  return <aside className={`content-confirmation${verified ? ' is-confirmed' : ''}`} role="status">
+    <div className="content-confirmation-heading"><Badge variant={verified ? 'accent' : 'warning'}>{verified ? '人工核实' : '人工记录·待核对'}</Badge>
+      <time dateTime={review.reviewed_at}>{review.reviewed_at}</time>
+    </div>
+    <p>{review.reason}</p>
+    {!verified && <p>以下是尚待核对的人工修改，不作为已确认活动或参与资格；不会进入当前活动日程。</p>}
+  </aside>;
+}
+
+function PublicFactsNotice() {
+  return <aside className="content-confirmation" role="status">
+    <p>状态标签沿用已发布的公开事实；本精简版未纳入来源核验材料，不对未导出的证据作判断。</p>
+  </aside>;
+}
+
+function ManualFacts({ activity, verified }: { activity: ManualActivity; verified: boolean }) {
+  return <section className="manual-facts">
+    {!verified && <p className="reference-note">人工填写的日程与信息（待核对）</p>}
+    <dl className="activity-facts">
+      {orderedActivityDates([...activity.dates]).map((date) => <div className="activity-fact" key={`${date.kind}/${date.date}`}><dt>{ACTIVITY_DATE_LABELS[date.kind]}</dt><dd>{date.date}{!verified && '（待核对）'}</dd></div>)}
+      {ACTIVITY_FACT_FIELDS.map(([key, label]) => <div className="activity-fact" key={key}><dt>{label}</dt><dd>{activity[key] ?? <span className="activity-unknown">尚未确认</span>}</dd></div>)}
+    </dl>
+  </section>;
+}
+
+function ManualActivityPanel({ occurrence }: { occurrence: PublicOccurrence }) {
+  const review = occurrence.manual_review;
+  const activity = review?.activity;
+  if (!review || !activity) return null;
+  const verified = hasVerifiedManualReview(occurrence);
+  return <section className="detail-section manual-activity">
+    <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>{verified ? '人工核实内容' : '人工填写内容（待核对）'}</h2><p>{occurrence.kind === 'standalone' ? '此活动由人工登记并明确发布，不属于原刊期次，也不新增来源证据。' : '人工修改独立于下方留存的 AI 与原刊记录，不新增 AI 来源证明。'}</p></div></div>
+    <div className="original-text">{activity.content}</div>
+    <section className="reference-block manual-source-links"><h3>{verified ? '人工确认的来源链接' : '人工填写的来源链接（待核对）'}</h3>
+      {activity.source_urls.length ? <ul className="source-link-list">{activity.source_urls.map((raw) => {
+        const href = manualPublicUrl(raw);
+        return href ? <li key={raw}><a href={href} target="_blank" rel="noopener noreferrer"><span>{raw}</span><ExternalLink size={14} aria-hidden="true" /></a></li> : null;
+      })}</ul> : <p className="detail-empty-note">未填写来源链接。</p>}
+    </section>
+  </section>;
+}
+
+function PublicFactsPanel({ occurrence }: { occurrence: PublicOccurrence }) {
+  const labels = { time: '活动时间', venue: '地点', audience: '面向对象', participation: '参与方式' } as const;
+  const dates = orderedActivityDates(occurrence.dates.filter((date) => ACTIVITY_DATE_KINDS[date.kind]
+    && confirmedActivityDate(occurrence, date)));
+  return <section className="detail-section manual-activity">
+    <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div>
+      <h2>{occurrence.kind === 'standalone' ? '独立收录的活动基本信息' : '活动公开基本信息'}</h2>
+      <p>此精简事实版仅包含已发布的基本字段；原刊正文、附件和模型记录未纳入本构建。下列来源链接为已公开链接。</p>
+    </div></div>
+    <dl className="activity-facts">
+      {dates.map((date, index) => <div className="activity-fact" key={`${date.kind}-${date.normalized_date}-${date.resolution}-${index}`}>
+        <dt>{ACTIVITY_DATE_LABELS[date.kind]}</dt><dd>{date.normalized_date}{date.resolution === 'contextual' && '（上下文推定）'}</dd>
+      </div>)}
+      {occurrence.activity_facts && (Object.keys(labels) as (keyof typeof labels)[]).map((key) => <div className="activity-fact" key={key}>
+        <dt>{labels[key]}</dt><dd>{occurrence.activity_facts?.[key] ?? <span className="activity-unknown">尚未确认</span>}</dd>
+      </div>)}
+    </dl>
+    <section className="reference-block manual-source-links"><h3>公开来源链接</h3>
+      {occurrence.source_urls.length ? <ul className="source-link-list">{occurrence.source_urls.map((raw) => {
+        const href = manualPublicUrl(raw);
+        return href ? <li key={raw}><a href={href} target="_blank" rel="noopener noreferrer"><span>{raw}</span><ExternalLink size={14} aria-hidden="true" /></a></li> : null;
+      })}</ul> : <p className="detail-empty-note">未附公开来源链接。</p>}
+    </section>
+  </section>;
+}
+
+function StandaloneReference({ occurrence, referenceClaims }: { occurrence: PublicOccurrence; referenceClaims: PublicDate[] }) {
+  const referenceDates = occurrence.original_dates ?? occurrence.dates;
+  return <section className="detail-section reference-section">
+    <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div>
+      <h2>独立收录</h2><p>此活动没有对应的原刊期次或原始归档文档；不以登记时间代替刊期。</p>
+    </div></div>
+    {!occurrence.manual_review?.activity && <p>公开来源链接见上方活动基本信息。</p>}
+    {referenceDates.length > 0 && <section className="reference-block">
+      <h3>独立收录的日期记录（参考）</h3>
+      <DateEvidence dates={referenceDates} emptyText="没有留存可识别的日期记录。" />
+    </section>}
+    {referenceClaims.length > 0 && <section className="reference-block">
+      <h3>AI 日期判断（仅参考，不代表原始来源已核实）</h3>
+      <DateEvidence dates={referenceClaims} emptyText="没有其他可供参考的日期判断。" expandEvidence />
+    </section>}
+  </section>;
+}
+
+
+function manualParticipationUrl(activity: ManualActivity | undefined): string | null {
+  if (!activity?.participation) return null;
+  for (const match of activity.participation.matchAll(/https?:\/\/[^\s<>"）)」』，。；、]+/gi)) {
+    const href = manualPublicUrl(match[0]);
+    if (href) return href;
+  }
+  return null;
 }
 
 function SourceLinks({ occurrence, state }: { occurrence: PublicOccurrence; state: ReaderState }) {
@@ -132,7 +250,8 @@ function SourceLinks({ occurrence, state }: { occurrence: PublicOccurrence; stat
       })}
     </div>}
     <div className="document-evidence" aria-label="原始来源核验状态">
-      {staleReview ? <p>来源链接已人工校正；旧来源核验不代表新链接、日期或活动内容已核实。</p>
+      {occurrence.content_status === 'needs_review' ? <p>同一活动仍有待核对记录；以下来源快照不代表日期或来源冲突已经解决。</p>
+        : staleReview ? <p>来源链接已人工校正；旧来源核验不代表新链接、日期或活动内容已核实。</p>
         : legacyReview ? <Badge variant="muted">历史留存来源</Badge>
         : review ? <><Badge variant={review.status === 'source_verified' ? 'accent' : 'warning'}>{labels[review.status]}</Badge>
         {review.reason !== occurrence.date_review?.reason && <p>{review.reason}</p>}</>
@@ -155,16 +274,27 @@ function sourceDocument(occurrence: PublicOccurrence, state: ReaderState): Publi
   return issue?.documents.find((document) => document.id === occurrence.document_id) ?? null;
 }
 
-function IssuePdfs({ occurrence, state }: { occurrence: PublicOccurrence; state: ReaderState }) {
-  const original = sourceDocument(occurrence, state);
-  const documents = original?.format === 'pdf' ? [original] : [];
-  const available = documents.filter((document) => document.pdf_path);
-  return <section className="reference-block original-pdf-reference">
+function IssueOriginal({ occurrence, state }: { occurrence: PublicOccurrence; state: ReaderState }) {
+  const issue = state.issues.find((entry) => entry.id === occurrence.issue_id);
+  const original = issue?.documents.find((document) => document.id === occurrence.document_id) ?? null;
+  const unavailableMessage = original?.format === 'pdf'
+    ? '该期原始 PDF 当前不可用。'
+    : !issue
+      ? '无法确认这条消息对应的期次原件。'
+      : issue.documents.length === 0
+        ? '该来源期次未提供原始文件。'
+        : '未找到与这条消息匹配的原始文件。';
+  return <section className="reference-block original-document-reference">
     <div className="section-heading"><span className="section-icon"><Paperclip size={17} aria-hidden="true" /></span><div><h3>本条所在期次原件</h3><p>仅显示与这条消息来源文档匹配的历史原件。</p></div></div>
-    {available.length ? <div className="pdf-downloads">{available.map((document) => <a className="pdf-download" key={document.id} href={state.assetUrl(document.pdf_path!)} target="_blank" rel="noopener noreferrer"><Download size={16} aria-hidden="true" /><span><strong>打开历史原始 PDF</strong><small>{document.filename} · {document.issue_date ?? document.claimed_issue_date ?? '期次日期未明'}</small></span><ArrowUpRight size={16} aria-hidden="true" /></a>)}</div> : <p className="pdf-empty"><FileText size={16} aria-hidden="true" />{documents.length ? '该期原始 PDF 当前不可用。' : '该来源期次未提供原始 PDF。'}</p>}
+    {original?.format === 'pdf' && original.pdf_path
+      ? <div className="pdf-downloads"><a className="pdf-download" href={state.assetUrl(original.pdf_path)} target="_blank" rel="noopener noreferrer"><Download size={16} aria-hidden="true" /><span><strong>打开历史原始 PDF</strong><small>{original.filename} · {original.issue_date ?? original.claimed_issue_date ?? '期次日期未明'}</small></span><ArrowUpRight size={16} aria-hidden="true" /></a></div>
+      : original?.format === 'html'
+        ? <p className="original-document-note"><FileText size={16} aria-hidden="true" />网页原件（HTML） · {original.filename} · {original.issue_date ?? original.claimed_issue_date ?? '期次日期未明'}</p>
+        : <p className="original-document-note"><FileText size={16} aria-hidden="true" />{unavailableMessage}</p>}
     {original && <DocumentEvidence document={original} />}
   </section>;
 }
+
 
 function OccurrenceSwitcher({ occurrence, state }: { occurrence: PublicOccurrence; state: ReaderState }) {
   const alternatives = state.selectedItem?.occurrences ?? [];
@@ -216,7 +346,8 @@ function ContentConfirmation({ occurrence, state, activity }: { occurrence: Publ
   const replaced = new Set((occurrence.source_corrections ?? []).map((correction) => correction.original_url));
   const staleReview = sourceReview?.sources.some((source) => replaced.has(source.url));
   let message: string;
-  if (!review) message = '尚无当前规则下的来源核验记录；原刊文字仅作为参考。';
+  if (occurrence.content_status === 'needs_review') message = '同一活动的日期或来源仍待核对；当前保留原刊和核查记录作为参考，不作为已确认活动展示。';
+  else if (!review) message = '尚无当前规则下的来源核验记录；原刊文字仅作为参考。';
   else if (staleReview) message = '来源已人工校正；旧来源核验不代表新链接、日期或活动内容已核实。';
   else if (!currentRules) message = '此为历史核查记录，不构成当前规则下的活动内容确认；旧日期仅在下方作为参考。';
   else if (sourceReview?.status === 'source_verified' && activity) message = '以下为 AI 根据已读取的原始来源整理的信息，不等于人工审核结论。';
@@ -299,46 +430,66 @@ function PrimaryActivityImages({ images, state }: { images: PublicOccurrence['pr
 
 function ActivityReviewPanel({ occurrence, state, activity, dateClaims }: { occurrence: PublicOccurrence; state: ReaderState; activity: ActivityReview; dateClaims: DateClaimGroups }) {
   return <section className="detail-section activity-review">
-    <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>AI 标准化活动信息</h2><p>信息依据已读取的原始来源整理；每项可展开查看证据。</p></div></div>
-    <div className="activity-primary-copy">
-      <ActivityTextField field={activity.summary} label="活动摘要" />
-      <details className="activity-more-content"><summary>补充内容与依据</summary><ActivityTextField field={activity.content} label="活动内容" /></details>
-    </div>
-    <ActivityDates primaryDates={dateClaims.primary} contextualDates={dateClaims.contextualBulletin} />
-    <ActivityFacts activity={activity} />
-    <ActivityColleges colleges={activity.colleges} state={state} />
+    <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>消息内容</h2><p>根据已读取的原始发布整理，完整内容如下。</p></div></div>
+    {activity.content.value ? <ActivityTextField field={activity.content} label="完整内容" /> : <OriginalExcerpt occurrence={occurrence} state={state} />}
     <PrimaryActivityImages images={activity.image_indices.length > 0 ? occurrence.primary_images : undefined} state={state} />
+    <details className="activity-date-evidence"><summary>来源引用与日期核查依据</summary>
+      <ActivityFieldEvidence field={activity.title} label="标题" />
+      <ActivityFieldEvidence field={activity.summary} label="摘要" />
+      <ActivityFieldEvidence field={activity.content} label="完整内容" />
+      {ACTIVITY_FACT_FIELDS.map(([key, label]) => <ActivityFieldEvidence key={key} field={activity[key]} label={label} />)}
+      <ActivityDates primaryDates={dateClaims.primary} contextualDates={dateClaims.contextualBulletin} />
+      <ActivityColleges colleges={activity.colleges} state={state} />
+      <ContentConfirmation occurrence={occurrence} state={state} activity={activity} />
+    </details>
+  </section>;
+}
+
+function OriginalExcerpt({ occurrence, state }: { occurrence: PublicOccurrence; state: ReaderState }) {
+  const isPdf = sourceDocument(occurrence, state)?.format === 'pdf';
+  const printedUrls = [...new Set([...occurrence.source_urls, ...(occurrence.source_corrections ?? []).map((correction) => correction.original_url)])];
+  const readableText = isPdf ? readablePdfText(occurrence.body_text, printedUrls) : occurrence.body_text;
+  return <section className="detail-section archived-excerpt">
+    <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>原刊文字</h2><p>保留刊载内容，不代表活动事实已核实。</p></div></div>
+    {occurrence.body_text ? <div className="original-text">{readableText}</div> : <p className="detail-empty-note">这条记录没有可展示的正文文本。</p>}
+    {isPdf && occurrence.body_text && <details className="pdf-original-layout">
+      <summary>查看 PDF 存档原始换行</summary>
+      <div className="original-text">{occurrence.body_text}</div>
+    </details>}
   </section>;
 }
 
 function BulletinReference({ occurrence, state, referenceClaims }: { occurrence: PublicOccurrence; state: ReaderState; referenceClaims: PublicDate[] }) {
-  const document = sourceDocument(occurrence, state);
-  const isPdf = document?.format === 'pdf';
-  const corrections = occurrence.source_corrections ?? [];
-  const printedUrls = [...new Set([...occurrence.source_urls, ...corrections.map((correction) => correction.original_url)])];
   const referenceDates = occurrence.original_dates ?? occurrence.dates;
-  const readableText = isPdf ? readablePdfText(occurrence.body_text, printedUrls) : occurrence.body_text;
+  const issue = occurrence.issue_id ? state.issues.find((entry) => entry.id === occurrence.issue_id) ?? null : null;
   return <section className="detail-section reference-section">
     <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>原刊与存档参考</h2><p>以下保留原刊资料、来源链接和档案内容；这些内容不替代已核验的活动字段。</p></div></div>
     <dl className="archive-metadata">
       <div><dt>原刊标题</dt><dd>{occurrence.title}</dd></div>
       <div><dt>消息类别</dt><dd>{occurrence.category ?? '未标注'}</dd></div>
       <div><dt>刊载类型与日期</dt><dd>{occurrence.kind === 'summary' ? '摘要' : occurrence.kind === 'detail' ? '详情' : '通知'} · {occurrence.issue_date ?? '期次日期未明'}</dd></div>
+      {occurrence.issue_id && <div><dt>所属期次页面</dt><dd>{issue
+        ? <Link to={state.issueHref(issue.id)}>{issue.issue_date ?? '期次日期未明'}{issue.issue_number !== null && ` · 第 ${issue.issue_number} 期`} · 打开本期</Link>
+        : `期次记录暂不可用（${occurrence.issue_id}）`}</dd></div>}
       {(occurrence.locator.page !== undefined || occurrence.locator.anchor) && <div><dt>原文定位</dt><dd>{occurrence.locator.page !== undefined ? `第 ${occurrence.locator.page} 页` : ''}{occurrence.locator.anchor ? ` · ${occurrence.locator.anchor}` : ''}</dd></div>}
     </dl>
     <section className="reference-block source-reference">
       <h3>来源链接与人工纠正记录</h3>
       <SourceLinks occurrence={occurrence} state={state} />
     </section>
-    <section className="reference-block archived-excerpt">
-      <h3>原刊文字摘录</h3>
-      <p className="reference-note">{isPdf ? 'PDF 可读性排版仅调整部分断行；展开可查看保留原始换行的存档文本。' : 'HTML 文字按存档中的原始段落排版呈现。'}</p>
-      {occurrence.body_text ? <div className="original-text">{readableText}</div> : <p className="detail-empty-note">这条记录没有可展示的正文文本。</p>}
-      {isPdf && occurrence.body_text && <details className="pdf-original-layout">
-        <summary>查看 PDF 原始版式与换行</summary>
-        <div className="original-text">{occurrence.body_text}</div>
-      </details>}
-    </section>
+    {occurrence.manual_review && occurrence.date_review && <section className="reference-block manual-ai-reference">
+      <h3>人工修改前的 AI 核查记录（仅参考）</h3>
+      <p className="reference-note">保留原始核查理由和引文；不代表 AI 已核验本次人工修改。</p>
+      <p>{occurrence.date_review.reason}</p>
+      {occurrence.date_review.source_review.reason !== occurrence.date_review.reason && <p>{occurrence.date_review.source_review.reason}</p>}
+      {occurrence.date_review.source_review.activity && <>
+        <ActivityTextField field={occurrence.date_review.source_review.activity.title} label="AI 留存标题" />
+        <ActivityTextField field={occurrence.date_review.source_review.activity.summary} label="AI 留存摘要" />
+        <ActivityTextField field={occurrence.date_review.source_review.activity.content} label="AI 留存正文" />
+        {(['title', 'summary', 'content', ...ACTIVITY_FACT_FIELDS.map(([key]) => key)] as const).map((key) => <ActivityFieldEvidence key={key} field={occurrence.date_review!.source_review.activity![key]} label={key} />)}
+      </>}
+    </section>}
+    {occurrence.manual_review && <PrimaryActivityImages images={occurrence.primary_images} state={state} />}
     {referenceDates.length > 0 && <section className="reference-block">
       <h3>{occurrence.original_dates ? '原刊识别日期（参考）' : '历史日期记录（参考）'}</h3>
       <DateEvidence dates={referenceDates} emptyText="原刊中没有留存可识别的日期。" />
@@ -349,7 +500,7 @@ function BulletinReference({ occurrence, state, referenceClaims }: { occurrence:
     </section>}
     {occurrence.college_mentions.length > 0 && <section className="reference-block">
       <h3>原刊学院提及（参考）</h3>
-      <CollegeMentions occurrence={occurrence} state={state} readOnly={Boolean(currentActivity(occurrence, state))} />
+      <CollegeMentions occurrence={occurrence} state={state} readOnly={Boolean(occurrence.manual_review || currentActivity(occurrence, state))} />
     </section>}
     {occurrence.table_cells.length > 0 && <section className="reference-block">
       <h3>原刊表格文字（参考）</h3>
@@ -362,15 +513,45 @@ function BulletinReference({ occurrence, state, referenceClaims }: { occurrence:
         <figcaption>{image.caption || (image.page !== null ? `原文第 ${image.page} 页` : '原文配图')} · 点击查看档案图片</figcaption>
       </figure>)}</div>
     </section>}
-    <IssuePdfs occurrence={occurrence} state={state} />
+    <IssueOriginal occurrence={occurrence} state={state} />
   </section>;
 }
 
 function DetailBody({ occurrence, state, activity, dateClaims }: { occurrence: PublicOccurrence; state: ReaderState; activity: ActivityReview | null; dateClaims: DateClaimGroups }) {
+  const manual = Boolean(occurrence.manual_review?.activity);
+  const hasAlternateRecords = (state.selectedItem?.occurrences.length ?? 0) > 1;
+  const referenceLabel = occurrence.kind === 'standalone'
+    ? hasAlternateRecords ? '独立收录与其他记录参考' : '独立收录与日期参考'
+    : state.manifest?.public_facts_only
+      ? hasAlternateRecords ? '刊载记录、其他版本与来源日期参考' : '刊载记录、来源与日期参考'
+      : hasAlternateRecords
+        ? manual ? '其他刊载记录、修改前的 AI 与来源通知参考' : '其他刊载记录、来源通知与原刊参考'
+        : manual ? '修改前的 AI、来源通知与原刊参考' : '来源通知、原刊与核对记录';
+  if (state.manifest?.public_facts_only) return <>
+    <PublicFactsPanel occurrence={occurrence} />
+    <details className="bulletin-reference-disclosure"><summary>{referenceLabel}</summary>
+      <OccurrenceSwitcher occurrence={occurrence} state={state} />
+      {occurrence.kind === 'standalone'
+        ? <StandaloneReference occurrence={occurrence} referenceClaims={dateClaims.reference} />
+        : <BulletinReference occurrence={occurrence} state={state} referenceClaims={dateClaims.reference} />}
+    </details>
+  </>;
+  if (occurrence.kind === 'standalone') return <>
+    {occurrence.manual_review?.activity ? <ManualActivityPanel occurrence={occurrence} /> : <PublicFactsPanel occurrence={occurrence} />}
+    <details className="bulletin-reference-disclosure"><summary>{referenceLabel}</summary>
+      <OccurrenceSwitcher occurrence={occurrence} state={state} />
+      <StandaloneReference occurrence={occurrence} referenceClaims={dateClaims.reference} />
+    </details>
+  </>;
   return <>
-    <ContentConfirmation occurrence={occurrence} state={state} activity={activity} />
-    {activity && <ActivityReviewPanel occurrence={occurrence} state={state} activity={activity} dateClaims={dateClaims} />}
-    <BulletinReference occurrence={occurrence} state={state} referenceClaims={dateClaims.reference} />
+    {manual ? <ManualActivityPanel occurrence={occurrence} />
+      : activity ? <ActivityReviewPanel occurrence={occurrence} state={state} activity={activity} dateClaims={dateClaims} />
+        : <OriginalExcerpt occurrence={occurrence} state={state} />}
+    <details className="bulletin-reference-disclosure"><summary>{referenceLabel}</summary>
+      <OccurrenceSwitcher occurrence={occurrence} state={state} />
+      {(manual || activity) && <OriginalExcerpt occurrence={occurrence} state={state} />}
+      <BulletinReference occurrence={occurrence} state={state} referenceClaims={dateClaims.reference} />
+    </details>
   </>;
 }
 
@@ -379,29 +560,56 @@ export function ItemDetail({ state }: { state: ReaderState }) {
   const item = state.selectedItem;
   const favorite = item ? state.favorites.has(item.id) : false;
 
-  if (state.detailStatus === 'loading') return <div className="detail-loading" role="status"><span className="loading-dot" />正在读取这条消息的公开档案…</div>;
+  if (state.detailStatus === 'loading') return <div className="detail-loading" role="status"><span className="loading-dot" />正在读取消息内容…</div>;
   if (state.detailStatus === 'error') return <div className="detail-error" role="alert"><h2>暂时无法读取这条消息</h2><p>{state.detailError || '档案文件读取失败。'}</p><Button type="button" onClick={state.retry}>重试读取</Button></div>;
-  if (!item || !occurrence) return <div className="missing-item" role="status"><div className="empty-state-mark"><CircleHelp size={22} aria-hidden="true" /></div><h2>没有找到这条消息</h2><p>此条目可能不在当前静态档案版本中。</p><Button asChild variant="outline"><Link to={state.listHref}><ArrowLeft size={15} aria-hidden="true" />返回消息列表</Link></Button></div>;
+  if (!item || !occurrence) return <div className="missing-item" role="status"><div className="empty-state-mark"><CircleHelp size={22} aria-hidden="true" /></div><h2>没有找到这条消息</h2><p>此条目可能不在当前静态档案版本中。</p><Button asChild variant="outline"><Link to={state.listHref} data-reader-return><ArrowLeft size={15} aria-hidden="true" />返回消息列表</Link></Button></div>;
   const activity = currentActivity(occurrence, state);
+  const manualReview = occurrence.manual_review;
+  const manual = manualReview?.activity;
+  const manuallyReviewed = Boolean(manualReview);
+  const humanVerified = hasVerifiedManualReview(occurrence);
   const dateClaims: DateClaimGroups = activity
     ? groupDateClaims(occurrence.date_review?.claims ?? [])
     : { primary: [], contextualBulletin: [], reference: occurrence.date_review?.claims ?? [] };
+  const replaced = new Set((occurrence.source_corrections ?? []).map((correction) => correction.original_url));
+  const sources = manual ? manual.source_urls
+    : [activity?.title.evidence[0]?.url, ...(occurrence.source_corrections ?? []).map((correction) => correction.corrected_url), ...occurrence.source_urls];
+  const sourceHref = manual ? sources.filter((url): url is string => Boolean(url)).map(manualPublicUrl).find(Boolean)
+    : sources.filter((url): url is string => Boolean(url) && !replaced.has(url!)).map(safeHttpUrl).find(Boolean);
+  const original = sourceDocument(occurrence, state);
+  const noticeHref = sourceHref ?? (original?.format === 'pdf' && original.pdf_path ? state.assetUrl(original.pdf_path) : null);
+  const participationHref = manual ? humanVerified ? manualParticipationUrl(manual) : null : participationUrl(activity?.participation);
+  const title = manual?.title ?? (activity ? activity.title.value ?? '活动标题未确认' : occurrence.title);
+  const summary = manual?.summary ?? activity?.summary.value ?? occurrence.preview;
+  const category = manual ? manual.category : occurrence.category;
 
   return (
-    <article className="item-detail">
+    <article className="item-detail" data-item-id={item.id} data-occurrence-id={occurrence.id}>
       <div className="detail-top-actions">
-        <Button asChild variant="ghost" size="sm" className="detail-back"><Link to={state.listHref}><ArrowLeft size={16} aria-hidden="true" />返回列表</Link></Button>
-        <Button type="button" variant="outline" size="sm" onClick={() => state.toggleFavorite(item.id)} aria-pressed={favorite}>
-          {favorite ? <BookmarkCheck size={16} aria-hidden="true" /> : <Bookmark size={16} aria-hidden="true" />}{favorite ? '已收藏' : '收藏消息'}
-        </Button>
+        <Button asChild variant="ghost" size="sm" className="detail-back"><Link to={state.listHref} data-reader-return><ArrowLeft size={16} aria-hidden="true" />返回阅读页</Link></Button>
+        <div className="detail-save-share">
+          <Button type="button" variant="outline" size="sm" onClick={() => state.toggleFavorite(item.id)} aria-pressed={favorite}>
+            {favorite ? <BookmarkCheck size={16} aria-hidden="true" /> : <Bookmark size={16} aria-hidden="true" />}{favorite ? '已收藏' : '收藏消息'}
+          </Button>
+          <ShareButton key={occurrence.id} title={title} text={summary ?? occurrence.preview} path={itemSharePath(item.id, occurrence.id)} label="分享消息" />
+        </div>
       </div>
       <header className="detail-header">
-        <div className="detail-badges">{occurrence.category && <Badge variant="accent">{occurrence.category}</Badge>}<Badge variant="muted">{occurrence.kind === 'summary' ? '摘要' : occurrence.kind === 'detail' ? '详情' : '通知'}</Badge><span className="detail-issue-date">{occurrence.issue_date ?? '消息日期未明'}</span><Badge variant={activity ? 'accent' : 'warning'}>{activity ? 'AI 已对照原文' : '活动内容未确认'}</Badge>{(occurrence.source_corrections?.length ?? 0) > 0 && <Badge variant="muted">人工校正来源</Badge>}</div>
-        <h1>{activity ? activity.title.value ?? '活动标题未确认' : occurrence.title}</h1>
-        <p className="detail-title-source">{activity ? '标题由 AI 依据已读取的原文整理。' : '原刊档案标题；不代表活动内容已核验。'}</p>
-        {activity && <ActivityFieldEvidence field={activity.title} label="活动标题" />}
+        <h1>{title}</h1>
+        <OccurrenceWarnings occurrence={occurrence} today={state.today} dateClaims={manual ? occurrence.dates : activity ? [...dateClaims.primary, ...dateClaims.contextualBulletin] : []} />
+        {state.manifest?.public_facts_only ? <>
+          {manuallyReviewed && <ManualConfirmation occurrence={occurrence} />}
+          <PublicFactsNotice />
+        </> : manuallyReviewed ? <ManualConfirmation occurrence={occurrence} /> : !activity && <ContentConfirmation occurrence={occurrence} state={state} activity={null} />}
+        {summary && <p className="detail-summary">{summary}</p>}
+        {manual ? <ManualFacts activity={manual} verified={humanVerified} /> : activity && <ActivityFacts activity={activity} category={occurrence.category} dates={dateClaims.primary} />}
+        <div className="detail-primary-actions">
+          {participationHref ? <a className="reader-button reader-button--primary reader-button--default" href={participationHref} target="_blank" rel="noopener noreferrer">{manual ? '查看参与方式（人工确认）' : '查看参与方式'}<ExternalLink size={15} aria-hidden="true" /><span className="visually-hidden">（新窗口打开）</span></a>
+            : noticeHref ? <a className="detail-source-action" href={noticeHref} target="_blank" rel="noopener noreferrer">{sourceHref ? manuallyReviewed ? humanVerified ? '查看来源链接（人工确认）' : '查看来源链接（待核对）' : activity ? '查看原始通知' : '查看来源链接' : '查看原刊 PDF'}<ExternalLink size={15} aria-hidden="true" /></a>
+              : <p className="detail-empty-note">{occurrence.kind === 'standalone' ? '此条为独立收录，不属于刊物期次；公开来源链接见下方。' : state.manifest?.public_facts_only ? '此精简事实版不包含原刊附件，请查看已公开来源链接。' : '未附可访问的原始通知，可参考下方原刊文字。'}</p>}
+        </div>
+        <div className="detail-badges">{category && <Badge variant="muted">{category}</Badge>}{occurrence.kind === 'standalone' && <Badge variant="muted">独立收录</Badge>}{state.manifest?.public_facts_only ? <ContentBadge status={occurrence.content_status} /> : <Badge variant={manuallyReviewed ? humanVerified ? 'accent' : 'warning' : activity ? 'muted' : 'warning'}>{manuallyReviewed ? humanVerified ? '人工核实' : '人工记录·待核对' : activity ? '已对照原文' : '原刊参考'}</Badge>}</div>
       </header>
-      <OccurrenceSwitcher occurrence={occurrence} state={state} />
       <div className="detail-sections"><DetailBody occurrence={occurrence} state={state} activity={activity} dateClaims={dateClaims} /></div>
     </article>
   );

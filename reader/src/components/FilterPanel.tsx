@@ -95,11 +95,10 @@ export function FilterPanel({ state, onDone }: FilterPanelProps) {
     <div className="filter-panel">
       <div className="filter-panel-heading">
         <div>
-          <span className="eyebrow">分类检索 · INDEX</span>
           <h2>筛选条件</h2>
         </div>
         <Button type="button" variant="ghost" size="sm" onClick={() => state.resetFilters()}>
-          <RotateCcw size={15} aria-hidden="true" /> 重置
+          <RotateCcw size={15} aria-hidden="true" /> 清除搜索与筛选
         </Button>
       </div>
 
@@ -145,8 +144,8 @@ export function FilterPanel({ state, onDone }: FilterPanelProps) {
       </fieldset>
 
       <div className="filter-panel-footer">
-        <span className="filter-note">筛选结果会保留在地址栏中</span>
-        {onDone && <Button type="button" onClick={onDone}>查看结果</Button>}
+        <span className="filter-note">条件即时生效，并保留在地址栏中</span>
+        {onDone && <Button type="button" onClick={onDone}>返回结果</Button>}
       </div>
     </div>
   );

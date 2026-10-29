@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { StaticDataset } from '../src/data';
-import type { ActivityReview, Catalog, Manifest, PublicDate, PublicIssue, PublicOccurrence, SourceReview } from '../src/types';
+import type { ActivityReview, Catalog, Manifest, ManualActivity, PublicDate, PublicIssue, PublicOccurrence, SourceReview } from '../src/types';
+import { currentActivityDate } from '../src/filter';
 
 const DATA_VERSION = 'a'.repeat(64);
 const ITEM_ID = `item-${'1'.repeat(24)}`;
@@ -11,6 +12,20 @@ const SOURCE_URL = 'https://example.edu/events/open-lecture';
 const SOURCE_QUOTE = '本次公开讲座11月2日；计算机学院参与活动。';
 const CURRENT_RULES = 'luna-content-evidence-v4';
 const LEGACY_RULES = 'luna-content-evidence-v3';
+
+type FullManualOccurrence = Omit<PublicOccurrence, 'manual_review'> & {
+  manual_review: NonNullable<PublicOccurrence['manual_review']> & { activity: ManualActivity };
+};
+
+function hasFullManualActivity(row: PublicOccurrence): row is FullManualOccurrence {
+  return row.manual_review?.activity !== undefined;
+}
+
+function fullManualActivity(row: PublicOccurrence): ManualActivity {
+  const activity = row.manual_review?.activity;
+  if (!activity) throw new Error('Fixture must contain full published manual activity.');
+  return activity;
+}
 
 const citation = { url: SOURCE_URL, text: SOURCE_QUOTE, image_index: null };
 const unknownField = { value: null, evidence: [] };
@@ -63,6 +78,20 @@ function occurrenceFixture(patch: Partial<PublicOccurrence> = {}): PublicOccurre
   };
 }
 
+function manualOccurrence(status: 'verified' | 'needs_review' = 'verified'): FullManualOccurrence {
+  const activity = { title: '人工活动标题', summary: '人工活动摘要', content: '人工核实的完整活动正文', category: '讲座',
+    venue: '人工确认地点', audience: null, participation: 'https://example.edu/register', time: null, organizer: null,
+    source_urls: [SOURCE_URL], dates: [{ kind: 'event' as const, date: '2026-11-02' }] };
+  const row = occurrenceFixture({ content_status: status === 'verified' ? 'human_verified' : 'needs_review',
+    manual_review: { revision: 'c'.repeat(64), status, reviewed_at: '2026-10-25T10:00:00+08:00', reason: '公开更正说明', activity },
+    dates: status === 'verified' ? [{ kind: 'event', normalized_date: '2026-11-02', resolution: 'explicit', literal_source: 'manual',
+      raw_text: '2026-11-02', evidence: '公开更正说明' }] : [],
+    activity_facts: status === 'verified' ? { venue: activity.venue, audience: activity.audience, participation: activity.participation, time: activity.time } : undefined,
+  });
+  if (!hasFullManualActivity(row)) throw new Error('Manual fixture must include its full activity payload.');
+  return row;
+}
+
 function datasetPayload(occurrence: PublicOccurrence) {
   const prefix = `versions/${DATA_VERSION}`;
   const manifest: Manifest = {
@@ -76,7 +105,11 @@ function datasetPayload(occurrence: PublicOccurrence) {
     items: [{ id: ITEM_ID, aliases: [], latest_occurrence_id: OCCURRENCE_ID, occurrence_count: 1, detail_path: `${prefix}/items/detail.json` }],
     occurrences: [{ id: OCCURRENCE_ID, item_id: ITEM_ID, issue_id: ISSUE_ID, document_id: DOCUMENT_ID,
       kind: 'detail', title: '原刊标题', category: '活动', preview: '档案预览', issue_date: '2026-10-17',
-      source_urls: [SOURCE_URL], source_hosts: ['example.edu'], colleges: ['计算机学院'], dates: [],
+      source_urls: [SOURCE_URL], source_hosts: ['example.edu'], colleges: ['计算机学院'],
+      dates: occurrence.dates.map(({ kind, normalized_date, resolution, literal_source }) => ({ kind, normalized_date, resolution, ...(literal_source ? { literal_source } : {}) })),
+      content_status: occurrence.content_status, activity_facts: occurrence.activity_facts,
+      ...(occurrence.manual_review ? { manual_review: { revision: occurrence.manual_review.revision, status: occurrence.manual_review.status,
+        reason: occurrence.manual_review.reason, reviewed_at: occurrence.manual_review.reviewed_at } } : {}),
       expiry_date: null, image_count: 0 }],
   };
   const issues: PublicIssue[] = [{ id: ISSUE_ID, title: '档案期次', issue_date: '2026-10-17', issue_number: 1, occurrence_count: 1,
@@ -106,6 +139,50 @@ async function loadOccurrence(occurrence: PublicOccurrence): Promise<PublicOccur
   });
   const dataset = await loadDataset();
   return (await dataset.loadItem(ITEM_ID)).occurrences[0];
+}
+
+async function loadStandalone(factsOnly: boolean) {
+  const version = 'd'.repeat(64);
+  const itemId = `item-${'8'.repeat(24)}`;
+  const occurrenceId = `occ-${'9'.repeat(24)}`;
+  const sourceId = `source-${'a'.repeat(24)}`;
+  const reason = 'Public standalone review';
+  const activity = { title: 'Standalone activity', summary: 'Standalone summary', content: 'Standalone reviewed content',
+    category: '活动', time: null, venue: 'Public hall', organizer: null, audience: null, participation: null,
+    source_urls: [SOURCE_URL], dates: [{ kind: 'event' as const, date: '2026-11-02' }] };
+  const stamp = { revision: 'c'.repeat(64), status: 'verified' as const,
+    reviewed_at: '2026-10-25T10:00:00+08:00', reason };
+  const catalogOccurrence = { id: occurrenceId, item_id: itemId, activity_id: itemId, source_id: sourceId,
+    issue_id: null, document_id: null, kind: 'standalone', title: activity.title, category: activity.category,
+    preview: activity.summary, issue_date: null, source_urls: [SOURCE_URL], source_hosts: ['example.edu'], colleges: [],
+    dates: [{ kind: 'event', normalized_date: '2026-11-02', resolution: 'explicit', literal_source: 'manual' }],
+    expiry_date: '2026-11-02', image_count: 0, content_status: 'human_verified',
+    activity_facts: { venue: 'Public hall', audience: null, participation: null, time: null }, manual_review: stamp };
+  const detailOccurrence = { ...catalogOccurrence, body_text: '', dates: [{ kind: 'event', raw_text: '2026-11-02',
+    normalized_date: '2026-11-02', resolution: 'explicit', literal_source: 'manual', evidence: factsOnly ? '' : reason }],
+    date_review: null, original_dates: [], college_mentions: [], images: [], primary_images: [], locator: {}, table_cells: [],
+    manual_review: factsOnly ? stamp : { ...stamp, activity } };
+  const prefix = `versions/${version}`;
+  const manifest: Manifest = { schema_version: 2, generator: 'webnews-static-v2', data_version: version,
+    ...(factsOnly ? { public_facts_only: true } : { generated_at: '2026-10-25T10:00:00+08:00' }),
+    content_rules_version: factsOnly ? 'public-facts-v1' : CURRENT_RULES,
+    counts: { items: 1, occurrences: 1, issues: 0, documents: 0, images: 0, pdfs: 0 },
+    files: { catalog: `${prefix}/catalog.json`, issues: `${prefix}/issues.json`,
+      search_documents: `${prefix}/search-documents.json`, search_index: `${prefix}/search-index.json` } };
+  const payloads = new Map<string, unknown>([
+    ['/data/manifest.json', manifest],
+    [`/data/${manifest.files.catalog}`, { items: [{ id: itemId, aliases: [], latest_occurrence_id: occurrenceId,
+      occurrence_count: 1, detail_path: `${prefix}/items/${itemId.slice(5, 7)}.json` }], occurrences: [catalogOccurrence] }],
+    [`/data/${manifest.files.issues}`, []],
+    [`/data/${prefix}/items/${itemId.slice(5, 7)}.json`, { [itemId]: { id: itemId,
+      latest_occurrence_id: occurrenceId, occurrences: [detailOccurrence] } }],
+  ]);
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+    const payload = payloads.get(new URL(String(input)).pathname);
+    return new Response(JSON.stringify(payload ?? null), { status: payload === undefined ? 404 : 200 });
+  });
+  const dataset = await loadDataset();
+  return { dataset, occurrence: (await dataset.loadItem(itemId)).occurrences[0] };
 }
 
 describe('public historical content compatibility', () => {
@@ -146,6 +223,27 @@ describe('public historical content compatibility', () => {
   });
 
   it.each([
+    ['unknown content confirmation status', (occurrence: Record<string, unknown>) => {
+      occurrence.content_status = 'verified_without_evidence';
+    }],
+    ['array content confirmation status', (occurrence: Record<string, unknown>) => {
+      occurrence.content_status = ['verified'];
+    }],
+    ['array date literal origin', (occurrence: Record<string, unknown>) => {
+      occurrence.dates = [{ ...dateFixture(), literal_source: ['primary'] }];
+    }],
+    ['card facts on an unconfirmed record', (occurrence: Record<string, unknown>) => {
+      occurrence.content_status = 'needs_review';
+      occurrence.activity_facts = { venue: '报告厅', audience: null, participation: null, time: null };
+    }],
+    ['non-text card facts', (occurrence: Record<string, unknown>) => {
+      occurrence.content_status = 'verified';
+      occurrence.activity_facts = { venue: ['报告厅'], audience: null, participation: null, time: null };
+    }],
+    ['unrecognized card facts', (occurrence: Record<string, unknown>) => {
+      occurrence.content_status = 'verified';
+      occurrence.activity_facts = { venue: null, audience: null, participation: null, time: null, invented: 'field' };
+    }],
     ['unexpected activity fields', (occurrence: Record<string, unknown>) => {
       const review = occurrence.date_review as Record<string, unknown>;
       const source = review.source_review as Record<string, unknown>;
@@ -188,5 +286,143 @@ describe('public historical content compatibility', () => {
     const malformed = structuredClone(occurrenceFixture()) as unknown as Record<string, unknown>;
     mutate(malformed);
     await expect(loadOccurrence(malformed as unknown as PublicOccurrence)).rejects.toThrow();
+  });
+});
+
+describe('public human review boundaries', () => {
+  it('admits an explicit human schedule while preserving original AI and archive references', async () => {
+    const original = manualOccurrence();
+    const loaded = await loadOccurrence(original);
+    expect(currentActivityDate(loaded, '2026-10-25')).toEqual(original.dates[0]);
+    expect(loaded.manual_review?.activity).toEqual(original.manual_review?.activity);
+    expect(loaded.date_review).toEqual(original.date_review);
+    expect(loaded.body_text).toEqual(original.body_text);
+    expect(loaded.title).toEqual(original.title);
+    expect(loaded.preview).toEqual(original.preview);
+    expect(loaded.original_dates).toEqual(original.original_dates);
+  });
+
+  it('loads published standalone activities without issue or document relations', async () => {
+    const loaded = await loadStandalone(false);
+    expect(loaded.dataset.issues).toEqual([]);
+    expect(loaded.dataset.catalog.occurrences[0]).toMatchObject({ kind: 'standalone', issue_id: null,
+      document_id: null, source_id: `source-${'a'.repeat(24)}`, content_status: 'human_verified' });
+    expect(loaded.occurrence.manual_review?.activity?.content).toBe('Standalone reviewed content');
+    expect(currentActivityDate(loaded.occurrence, '2026-10-25')?.normalized_date).toBe('2026-11-02');
+  });
+
+  it('loads compact tracked facts without restoring private evidence or long content', async () => {
+    const loaded = await loadStandalone(true);
+    expect(loaded.dataset.manifest.public_facts_only).toBe(true);
+    expect(loaded.dataset.catalog.occurrences[0].kind).toBe('standalone');
+    expect(loaded.occurrence.manual_review?.activity).toBeUndefined();
+    expect(loaded.occurrence.body_text).toBe('');
+    expect(loaded.occurrence.date_review).toBeNull();
+    expect(currentActivityDate(loaded.occurrence, '2026-10-25')?.normalized_date).toBe('2026-11-02');
+  });
+
+  it('loads Python-length emoji boundaries in both public stamps and projected facts', async () => {
+    const row = manualOccurrence();
+    const reason = `${'r'.repeat(1999)}😀`;
+    const venue = `${'v'.repeat(499)}😀`;
+    row.manual_review!.reason = reason;
+    row.manual_review!.activity.venue = venue;
+    row.activity_facts!.venue = venue;
+    row.dates[0].evidence = reason;
+
+    const loaded = await loadOccurrence(row);
+    expect(loaded.manual_review!.reason).toBe(reason);
+    expect(loaded.activity_facts!.venue).toBe(venue);
+    expect(currentActivityDate(loaded, '2026-10-25')?.normalized_date).toBe('2026-11-02');
+
+    row.manual_review!.reason += '😀';
+    row.dates[0].evidence = row.manual_review!.reason;
+    await expect(loadOccurrence(row)).rejects.toThrow();
+  });
+
+  it('keeps pending manual text readable without admitting dates or facts', async () => {
+    const loaded = await loadOccurrence(manualOccurrence('needs_review'));
+    expect(fullManualActivity(loaded).dates).toHaveLength(1);
+    expect(loaded.dates).toEqual([]);
+    expect(loaded.activity_facts).toBeUndefined();
+    expect(currentActivityDate(loaded, '2026-10-25')).toBeNull();
+  });
+
+  it.each([
+    ['missing stamp', (row: PublicOccurrence) => { delete row.manual_review; }],
+    ['malformed revision', (row: PublicOccurrence) => { row.manual_review!.revision = 'unbound'; }],
+    ['array-valued revision', (row: PublicOccurrence) => { Object.assign(row.manual_review!, { revision: ['c'.repeat(64)] }); }],
+    ['missing timestamp timezone', (row: PublicOccurrence) => { row.manual_review!.reviewed_at = '2026-10-25T10:00:00'; }],
+    ['impossible timestamp date', (row: PublicOccurrence) => { row.manual_review!.reviewed_at = '2026-02-30T10:00:00Z'; }],
+    ['non-ISO timestamp hour', (row: PublicOccurrence) => { row.manual_review!.reviewed_at = '2026-10-25T24:00:00Z'; }],
+    ['empty public reason', (row: PublicOccurrence) => { row.manual_review!.reason = ' '; }],
+    ['overlong public reason', (row: PublicOccurrence) => { row.manual_review!.reason = 'x'.repeat(2001); }],
+    ['pending stamp with verified status', (row: PublicOccurrence) => { row.manual_review!.status = 'needs_review'; }],
+    ['AI status on manual edit', (row: PublicOccurrence) => { row.content_status = 'verified'; }],
+    ['private audit stamp field', (row: PublicOccurrence) => { Object.assign(row.manual_review!, { actor: 'private-operator' }); }],
+    ['unknown human activity field', (row: PublicOccurrence) => { Object.assign(fullManualActivity(row), { invented: 'extra' }); }],
+    ['overlong human content', (row: PublicOccurrence) => { fullManualActivity(row).content = 'x'.repeat(60001); }],
+    ['invalid manual activity date', (row: PublicOccurrence) => { fullManualActivity(row).dates[0].date = '2026-02-29'; }],
+    ['duplicated manual date', (row: PublicOccurrence) => { fullManualActivity(row).dates.push(fullManualActivity(row).dates[0]); }],
+    ['contextual manual schedule', (row: PublicOccurrence) => { row.dates[0].resolution = 'contextual'; }],
+    ['AI provenance on manual schedule', (row: PublicOccurrence) => { row.dates[0].literal_source = 'primary'; }],
+    ['manual provenance on original AI proof', (row: PublicOccurrence) => { row.date_review!.claims![0].literal_source = 'manual'; }],
+    ['mismatched human schedule', (row: PublicOccurrence) => { row.dates[0].normalized_date = '2026-11-03'; }],
+    ['mismatched human card fact', (row: PublicOccurrence) => { row.activity_facts!.venue = 'Not the reviewed value'; }],
+    ['missing human card facts', (row: PublicOccurrence) => { delete row.activity_facts; }],
+    ['overlong human summary', (row: PublicOccurrence) => { fullManualActivity(row).summary = 'x'.repeat(1501); }],
+    ['empty human title', (row: PublicOccurrence) => { fullManualActivity(row).title = ' '; }],
+    ['empty human body', (row: PublicOccurrence) => { fullManualActivity(row).content = ''; }],
+    ['non-null unknown field', (row: PublicOccurrence) => { fullManualActivity(row).organizer = ''; }],
+    ['overlong human category', (row: PublicOccurrence) => { fullManualActivity(row).category = 'x'.repeat(201); }],
+    ['too many human sources', (row: PublicOccurrence) => { fullManualActivity(row).source_urls = Array.from({ length: 101 }, (_, index) => `https://example.edu/${index}`); }],
+    ['too many human dates', (row: PublicOccurrence) => { fullManualActivity(row).dates = Array.from({ length: 101 }, (_, index) => ({ kind: 'event', date: `${2027 + index}-01-01` })); }],
+    ['duplicate human sources', (row: PublicOccurrence) => { fullManualActivity(row).source_urls = [SOURCE_URL, SOURCE_URL]; }],
+    ['unexpected schedule field', (row: PublicOccurrence) => { Object.assign(row.dates[0], { citation: 'invented' }); }],
+    ['unbound manual schedule explanation', (row: PublicOccurrence) => { row.dates[0].evidence = 'not the public reason'; }],
+  ])('rejects %s', async (_name, mutate) => {
+    const row = manualOccurrence();
+    mutate(row);
+    await expect(loadOccurrence(row)).rejects.toThrow();
+  });
+
+  it.each(['javascript:alert(1)', 'https://user:password@example.edu/path', 'http://127.0.0.1/',
+    'http://10.0.0.1/', 'http://[::1]/', 'http://[::ffff:192.168.1.1]/', 'http://localhost/',
+    'https://service.internal/', 'https://service.local/', 'https://intranet/', 'https://example.edu/\npath'])
+  ('rejects unsafe human source links: %s', async (url) => {
+    const row = manualOccurrence();
+    row.manual_review!.activity.source_urls = [url];
+    await expect(loadOccurrence(row)).rejects.toThrow();
+  });
+
+  it('accepts the full manual content bound without changing the smaller AI bound', async () => {
+    const row = manualOccurrence();
+    row.manual_review!.activity.content = 'x'.repeat(60000);
+    expect(fullManualActivity(await loadOccurrence(row)).content).toHaveLength(60000);
+    const ai = occurrenceFixture();
+    ai.date_review!.source_review.activity!.content = knownField('x'.repeat(8001));
+    await expect(loadOccurrence(ai)).rejects.toThrow();
+  });
+
+  it('rejects schedule or facts promotion on pending edits', async () => {
+    const row = manualOccurrence('needs_review');
+    row.dates = manualOccurrence().dates;
+    await expect(loadOccurrence(row)).rejects.toThrow();
+    row.dates = [];
+    row.activity_facts = manualOccurrence().activity_facts;
+    await expect(loadOccurrence(row)).rejects.toThrow();
+  });
+
+  it('rejects a catalog stamp containing full manual body or private audit fields', async () => {
+    for (const extra of [{ activity: manualOccurrence().manual_review!.activity }, { actor: 'private-operator' }]) {
+      const payloads = datasetPayload(manualOccurrence());
+      const catalog = payloads.get(`/data/versions/${DATA_VERSION}/catalog.json`) as Catalog;
+      Object.assign(catalog.occurrences[0].manual_review!, extra);
+      vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+        const payload = payloads.get(new URL(String(input)).pathname);
+        return new Response(JSON.stringify(payload ?? null), { status: payload === undefined ? 404 : 200 });
+      });
+      await expect(loadDataset()).rejects.toThrow();
+    }
   });
 });

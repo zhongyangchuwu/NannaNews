@@ -210,7 +210,7 @@ def test_public_contract_privacy_readonly_and_all_occurrences(evidence, tmp_path
     assert pdf_occurrence['locator'] == {'page': 3}
     assert pdf_occurrence['table_cells'] == [{'header': '内容', 'text': '原表文字'}]
     catalog_keys = {'id', 'item_id', 'issue_id', 'document_id', 'kind', 'title', 'category', 'preview',
-                    'issue_date', 'source_urls', 'source_hosts', 'colleges', 'dates', 'expiry_date', 'image_count'}
+                    'issue_date', 'source_urls', 'source_hosts', 'colleges', 'dates', 'expiry_date', 'image_count', 'content_status'}
     assert all(set(row) == catalog_keys for row in catalog['occurrences'])
     assert all(set(row) == catalog_keys | {'body_text', 'college_mentions', 'images', 'locator', 'table_cells', 'date_review', 'original_dates', 'primary_images'}
                for row in public_occurrences)
@@ -511,7 +511,8 @@ def test_reviewed_contextual_dates_keep_basis_without_private_review_metadata(ev
     manifest, catalog, _, _, details = _load(output)
     public = next(row for row in catalog['occurrences'] if row['title'] == '原始PDF通知')
     assert public['expiry_date'] == expected_expiry
-    assert public['dates'] == [{'kind': 'event', 'normalized_date': '2026-10-21', 'resolution': 'contextual'}]
+    assert public['dates'] == [{'kind': 'event', 'normalized_date': '2026-10-21', 'resolution': 'contextual',
+                               'literal_source': 'bulletin'}]
     detail = next(row for item in details.values() for row in item['occurrences'] if row['id'] == public['id'])
     assert detail['dates'][0]['evidence'] == claim['evidence']
     assert detail['date_review']['status'] == status
@@ -643,9 +644,18 @@ def test_verified_activity_exports_own_facts_dates_and_inert_selected_images(evi
     output = tmp_path / 'confirmed-public'
     static_export.export_static(output, settings=evidence)
     assert evidence.database_path.read_bytes() == before
-    manifest, _, _, _, details = _load(output)
+    manifest, catalog, _, search, details = _load(output)
     occurrence = next(row for item in details.values() for row in item['occurrences']
                       if row['body_text'] == '科学讲座全文：所有历史正文')
+    card = next(row for row in catalog['occurrences'] if row['id'] == occurrence['id'])
+    assert card['content_status'] == 'verified'
+    assert card['preview'] == '面向化学学院的科学讲座。'
+    assert card['activity_facts'] == {
+        'venue': '报告厅', 'audience': '化学学院', 'participation': None, 'time': '19:00'}
+    assert occurrence['body_text'] == '科学讲座全文：所有历史正文'
+    search_entry = next(row for row in search if row['id'] == occurrence['id'])
+    assert '在报告厅举行科学讲座，活动面向化学学院。' in search_entry['text']
+    assert occurrence['body_text'] in search_entry['text']
     assert [(claim['kind'], claim['normalized_date']) for claim in occurrence['date_review']['claims']] == [
         ('event', '2026-10-20')]
     assert occurrence['date_review']['claims'][0]['literal_source'] == 'primary'
@@ -676,6 +686,8 @@ def test_legacy_activity_cannot_publish_confirmed_facts_or_source_images(evidenc
     assert occurrence['primary_images'] == [] and manifest['counts']['images'] == 1
     assert 'claims' not in occurrence['date_review']
     assert occurrence['body_text'] == '科学讲座全文：所有历史正文'
+    assert occurrence['content_status'] == 'legacy'
+    assert occurrence['preview'] == occurrence['body_text']
 
 
 def test_empty_ai_date_verdict_keeps_original_dates_as_explicit_reference(evidence, tmp_path):
@@ -703,12 +715,17 @@ def test_primary_source_verdict_does_not_upgrade_bulletin_only_deadline(evidence
     _install_content_review(evidence, bulletin_deadline=True)
     output = tmp_path / 'mixed-date-evidence'
     static_export.export_static(output, settings=evidence)
-    _, _, _, _, details = _load(output)
+    _, catalog, _, _, details = _load(output)
     occurrence = next(row for item in details.values() for row in item['occurrences']
                       if row['body_text'].startswith('科学讲座全文：所有历史正文'))
     assert occurrence['date_review']['source_review']['status'] == 'source_verified'
     assert [(claim['kind'], claim['literal_source']) for claim in occurrence['date_review']['claims']] == [
         ('event', 'primary'), ('deadline', 'bulletin')]
+    card = next(row for row in catalog['occurrences'] if row['id'] == occurrence['id'])
+    assert ('event', '2026-10-20', 'primary') in {
+        (claim['kind'], claim['normalized_date'], claim['literal_source']) for claim in card['dates']}
+    assert all(claim['literal_source'] == 'bulletin' for claim in card['dates'] if claim['kind'] == 'deadline')
+
 
 
 def test_mismatched_source_quote_cannot_upgrade_bulletin_date_provenance(evidence, tmp_path):
@@ -752,3 +769,39 @@ def test_verified_college_filters_use_primary_facts_but_keep_original_mentions(e
     assert indexed['colleges'] == ['化学学院']
     assert {row['name'] for row in detail['college_mentions']} == {'化学学院', '未获原文支持的学院'}
 
+
+
+def test_held_occurrence_withholds_entire_activity_without_rewriting_evidence(evidence, tmp_path):
+    _install_content_review(evidence)
+    static_export.export_static(tmp_path / 'before', settings=evidence)
+    _, before_catalog, _, _, before_details = _load(tmp_path / 'before')
+    reviewed = next(row for item in before_details.values() for row in item['occurrences']
+                    if row['body_text'] == '科学讲座全文：所有历史正文')
+    summary = next(row for row in before_catalog['occurrences']
+                   if row['item_id'] == reviewed['item_id'] and row['kind'] == 'summary')
+    database_before = evidence.database_path.read_bytes()
+    static_export.export_static(tmp_path / 'held', settings=evidence, held_occurrence_ids=[summary['id']])
+    manifest, catalog, _, search, details = _load(tmp_path / 'held')
+    assert evidence.database_path.read_bytes() == database_before
+    cards = [row for row in catalog['occurrences'] if row['item_id'] == reviewed['item_id']]
+    assert {row['id'] for row in cards} == {row['id'] for row in before_catalog['occurrences']
+                                         if row['item_id'] == reviewed['item_id']}
+    assert all(row['content_status'] == 'needs_review' and row['dates'] == []
+               and row['expiry_date'] is None for row in cards)
+    assert all('activity_facts' not in row for row in cards)
+    assert all('activity_facts' not in row for item in details.values() for row in item['occurrences']
+               if row['content_status'] != 'verified')
+    held = next(row for item in details.values() for row in item['occurrences'] if row['id'] == reviewed['id'])
+    assert held['primary_images'] == [] and manifest['counts']['images'] == 1
+    for key in ('body_text', 'original_dates', 'date_review', 'dates'):
+        assert held[key] == reviewed[key]
+    assert held['preview'] == held['body_text']
+    assert next(row['text'] for row in search if row['id'] == held['id']) == held['body_text']
+
+
+@pytest.mark.parametrize('public_id', ['occ-invalid', 'occ-' + '0' * 24])
+def test_unknown_or_malformed_hold_never_publishes_a_dataset(evidence, tmp_path, public_id):
+    output = tmp_path / 'public'
+    with pytest.raises(static_export.StaticExportError):
+        static_export.export_static(output, settings=evidence, held_occurrence_ids=[public_id])
+    assert not output.exists()

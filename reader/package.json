@@ -11,8 +11,9 @@
     "dev": "vite --host 127.0.0.1",
     "stage:data": "node scripts/stage-data.mjs",
     "build:search": "node scripts/build-search.mjs",
+    "build:share": "node scripts/build-share.mjs",
     "check": "tsc -b",
-    "build": "npm run build:search && npm run check && vite build",
+    "build": "npm run stage:data -- --if-missing && npm run build:search && npm run check && vite build && npm run build:share",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run"
   },

@@ -237,7 +237,7 @@ def _unique(values):
     return [json.loads(value) for value in sorted({_json(v).decode('utf-8') for v in values})]
 
 
-def _read_public(db, stage, upload):
+def _read_public(db, stage, upload, held_occurrence_ids):
     from nannanews import bulletin_source_repair
     from nannanews import bulletin_date_repair
 
@@ -273,18 +273,26 @@ def _read_public(db, stage, upload):
         raise StaticExportError('Invalid bulletin document digest.')
     if len(set(raw_item_ids.values())) != len(raw_item_ids) or len(set(issue_ids.values())) != len(issue_ids):
         raise StaticExportError('Public identity collision.')
+    occurrence_public_ids = {row['id']: _id('occ-', row['source_sha256'] + ':' + row['local_key'])
+                             for row in occurrences}
+    if held_occurrence_ids - set(occurrence_public_ids.values()):
+        raise StaticExportError('A held occurrence is not present in this bulletin snapshot.')
+    held_items = {canonical_items[row['item_id']] for row in occurrences
+                  if occurrence_public_ids[row['id']] in held_occurrence_ids}
+    held_rows = {row['id'] for row in occurrences if canonical_items[row['item_id']] in held_items}
     group_keys = {row['id']: (canonical_items[row['item_id']], row['document_id']) for row in occurrences}
-    date_reviews = {row.pop('occurrence_id'): row for row in _rows(db,
+    date_reviews = {}
+    review_cursor = db.execute(
         'SELECT id AS revision_id,occurrence_id,status,reason,rules_version,source_review_json FROM ('
-        + bulletin_date_repair.current_revisions_sql(db) + ')')}
+        + bulletin_date_repair.current_revisions_sql(db) + ')')
     source_corrections = bulletin_source_repair.public_corrections(db)
-    if any(not isinstance(review['status'], str) or not isinstance(review['reason'], str)
-           or not isinstance(review['rules_version'], str)
-           for review in date_reviews.values()):
-        raise StaticExportError('Invalid public date review explanation.')
-    primary_images, source_media_cache = {}, {}
+    primary_images, source_media_cache, current_activities = {}, {}, {}
     primary_image_paths = set()
-    for occurrence_id, review in date_reviews.items():
+    for stored_review in review_cursor:
+        review = dict(stored_review)
+        occurrence_id = review.pop('occurrence_id')
+        if any(not isinstance(review[key], str) for key in ('status', 'reason', 'rules_version')):
+            raise StaticExportError('Invalid public date review explanation.')
         try:
             captured_review = json.loads(review.pop('source_review_json') or 'null')
             revision_id = review.pop('revision_id')
@@ -299,7 +307,10 @@ def _read_public(db, stage, upload):
                     claim['literal_source'] = ('primary' if any(claim['raw_text'] in quote for quote in primary_quotes)
                                                else 'bulletin')
                 activity = source_review.get('activity')
-                if activity is not None:
+                replaced = {correction['original_url'] for correction in source_corrections[occurrence_id]}
+                current_source = not any(source['url'] in replaced for source in source_review['sources'])
+                if activity is not None and current_source and occurrence_id not in held_rows:
+                    current_activities[occurrence_id] = activity
                     selected = set(activity['image_indices'])
                     images = []
                     for source in captured_review['sources']:
@@ -324,6 +335,7 @@ def _read_public(db, stage, upload):
                     raise ValueError
                 _iso(source['published_date'])
             review['source_review'] = source_review
+            date_reviews[occurrence_id] = review
         except (KeyError, TypeError, ValueError):
             raise StaticExportError('Invalid public source verification evidence.') from None
     groups = defaultdict(lambda: {'dates': [], 'expiry_dates': [], 'colleges': [], 'sources': set()})
@@ -346,6 +358,11 @@ def _read_public(db, stage, upload):
                 or not isinstance(row['evidence'], str) or not row['evidence'].strip()
                 or row['evidence'].strip() == row['raw_text'].strip()):
             raise StaticExportError('Contextual bulletin date lacks a separate source basis.')
+        claims = date_reviews.get(occurrence_id, {}).get('claims', [])
+        row['literal_source'] = 'primary' if any(
+            claim['literal_source'] == 'primary' and all(row[key] == claim[key]
+                for key in ('kind', 'raw_text', 'normalized_date', 'resolution', 'evidence'))
+            for claim in claims) else 'bulletin'
         groups[key]['dates'].append(row)
         if date_reviews.get(occurrence_id, {}).get('status') not in {'recurring_no_end', 'uncertain', 'invalid_source'}:
             groups[key]['expiry_dates'].append(row)
@@ -440,7 +457,7 @@ def _read_public(db, stage, upload):
         # An evidence-free group still needs document sources and unknown expiry.
         if 'expiry' not in group:
             group.update(sources=sorted(document_sources[row['document_id']]), expiry=None)
-        occurrence_id = _id('occ-', row['source_sha256'] + ':' + row['local_key'])
+        occurrence_id = occurrence_public_ids[row['id']]
         if occurrence_id in occurrence_ids:
             raise StaticExportError('Public occurrence identity collision.')
         occurrence_ids.add(occurrence_id)
@@ -459,18 +476,39 @@ def _read_public(db, stage, upload):
         category = row['category']
         if row['document_id'] in html_categories and category not in html_categories[row['document_id']]:
             category = None
-        activity = date_reviews.get(row['id'], {}).get('source_review', {}).get('activity')
+        activity = current_activities.get(row['id'])
+        review = date_reviews.get(row['id'])
+        replaced = {correction['original_url'] for correction in source_corrections[row['id']]}
+        if row['id'] in held_rows:
+            content_status = 'needs_review'
+        elif replaced and (review is None or any(source['url'] in replaced
+                                                for source in review['source_review']['sources'])):
+            content_status = 'source_corrected'
+        elif review is None:
+            content_status = 'unreviewed'
+        elif review['rules_version'] != RULES_VERSION:
+            content_status = 'legacy'
+        elif review['source_review']['status'] == 'source_conflict':
+            content_status = 'conflict'
+        else:
+            content_status = 'verified' if activity is not None else 'unconfirmed'
         filter_colleges = activity['colleges'] if activity is not None else group['colleges']
         public = {
             'id': occurrence_id, 'item_id': item_id, 'issue_id': issue_ids[row['issue_id']],
             'document_id': row['source_sha256'], 'kind': row['kind'], 'title': row['title'],
-            'category': category, 'preview': row['body_text'][:240],
+            'category': category, 'preview': (activity['summary']['value'] if activity else row['body_text'])[:240],
+            'content_status': content_status,
             'issue_date': _iso(row['issue_date']), 'source_urls': sources,
             'source_hosts': sorted({urlsplit(url).hostname.lower() for url in sources}),
             'colleges': sorted({c['name'] for c in filter_colleges}),
-            'dates': [{k: d[k] for k in ('kind', 'normalized_date', 'resolution')} for d in group['dates']],
-            'expiry_date': group['expiry'], 'image_count': len(images) + len(primary_images.get(row['id'], [])),
+            'dates': [] if row['id'] in held_rows else [
+                {k: d[k] for k in ('kind', 'normalized_date', 'resolution', 'literal_source')} for d in group['dates']],
+            'expiry_date': None if row['id'] in held_rows else group['expiry'],
+            'image_count': len(images) + len(primary_images.get(row['id'], [])),
         }
+        if content_status == 'verified':
+            public['activity_facts'] = {field: activity[field]['value']
+                                        for field in ('venue', 'audience', 'participation', 'time')}
         if source_corrections[row['id']]:
             public['source_corrections'] = source_corrections[row['id']]
         catalog['occurrences'].append(public)
@@ -486,7 +524,12 @@ def _read_public(db, stage, upload):
         if item_id not in details:
             details[item_id] = {'id': item_id, 'latest_occurrence_id': occurrence_id, 'occurrences': []}
         details[item_id]['occurrences'].append(occurrence)
-        search.append({'id': occurrence_id, 'title': row['title'], 'text': row['body_text']})
+        search_text = row['body_text']
+        if activity is not None:
+            search_text += '\n' + '\n'.join(activity[field]['value'] for field in
+                ('title', 'summary', 'content', 'time', 'venue', 'organizer', 'audience', 'participation')
+                if activity[field]['value'] is not None)
+        search.append({'id': occurrence_id, 'title': row['title'], 'text': search_text})
         issue_counts[row['issue_id']] += 1
     if len(details) != len(items):
         raise StaticExportError('Bulletin logical item has no occurrence.')
@@ -577,7 +620,7 @@ def _publish(stage, output, version, previous):
         raise StaticExportError('Could not atomically publish the generated manifest.') from None
 
 
-def export_static(output_dir, *, settings=None, replace=False):
+def export_static(output_dir, *, settings=None, replace=False, held_occurrence_ids=()):
     """Return counts/bytes/data_version/output after a read-only atomic export.
 
     ``bytes`` counts this generated dataset, excluding any separately built search
@@ -588,10 +631,17 @@ def export_static(output_dir, *, settings=None, replace=False):
     Replacement switches the manifest atomically and retains historical versions.
     No database initialization, runtime connection, model, or network runs. Only
     category headings are read from verified original HTML; records are not reparsed.
+    Explicit held occurrences protect their entire canonical activity: original
+    evidence remains in detail records, but confirmed content and date filtering
+    are withheld. This display gate never alters a stored model verdict or date.
     """
     if settings is None:
         from nannanews import runtime
         settings = runtime.settings
+    held_occurrence_ids = frozenset(held_occurrence_ids)
+    if any(not isinstance(value, str) or not re.fullmatch(r'occ-[0-9a-f]{24}', value)
+           for value in held_occurrence_ids):
+        raise StaticExportError('Held occurrences must use public occurrence identifiers.')
     output = Path(output_dir).expanduser().absolute()
     _no_symlinks(output)
     output = output.resolve()
@@ -617,7 +667,8 @@ def export_static(output_dir, *, settings=None, replace=False):
                 db.row_factory = sqlite3.Row
                 db.execute('PRAGMA query_only=ON')
                 db.execute('BEGIN')  # One coherent SQLite read snapshot, including WAL.
-                catalog, issues, shards, search, counts, assets = _read_public(db, payload, upload)
+                catalog, issues, shards, search, counts, assets = _read_public(
+                    db, payload, upload, held_occurrence_ids)
                 db.rollback()
         except (sqlite3.Error, KeyError, TypeError, json.JSONDecodeError):
             raise StaticExportError('Bulletin snapshot has incompatible public evidence.') from None

@@ -5,6 +5,7 @@ import MiniSearch from 'minisearch';
 import { searchOptions } from '../src/tokenize.mjs';
 
 const defaultDataDir = fileURLToPath(new URL('../public/data/', import.meta.url));
+const SOURCE_ID = /^source-[a-f0-9]{24}$/;
 
 async function secureFile(root, relative, version, allowMissing = false) {
   if (typeof relative !== 'string' || isAbsolute(relative) || !/^[A-Za-z0-9._/-]+$/.test(relative)
@@ -38,9 +39,12 @@ export async function buildSearch(dataDir = defaultDataDir) {
   const manifestStat = await lstat(manifestPath);
   if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error('Manifest must be a regular file.');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const factsOnly = manifest.public_facts_only === true;
   if (manifest.schema_version !== 2 || manifest.generator !== 'webnews-static-v2'
     || typeof manifest.data_version !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.data_version)
-    || typeof manifest.generated_at !== 'string' || !Number.isFinite(Date.parse(manifest.generated_at))) {
+    || manifest.public_facts_only !== undefined && typeof manifest.public_facts_only !== 'boolean'
+    || (factsOnly ? manifest.generated_at !== undefined
+      : typeof manifest.generated_at !== 'string' || !Number.isFinite(Date.parse(manifest.generated_at)))) {
     throw new Error('Unsupported or invalid public-data manifest.');
   }
   for (const key of ['items', 'occurrences', 'issues', 'documents', 'images', 'pdfs']) {
@@ -76,7 +80,14 @@ export async function buildSearch(dataDir = defaultDataDir) {
     throw new Error('Invalid or duplicate catalog item.');
   }
   for (const occurrence of catalog.occurrences) {
-    if (!ids.has(occurrence.id) || occurrenceIds.has(occurrence.id) || !itemIds.has(occurrence.item_id)) {
+    const standalone = occurrence?.kind === 'standalone';
+    const validReferences = standalone
+      ? occurrence.issue_id === null && occurrence.document_id === null && occurrence.issue_date === null
+        && occurrence.activity_id === occurrence.item_id && SOURCE_ID.test(occurrence.source_id)
+      : ['summary', 'detail', 'notice'].includes(occurrence?.kind)
+        && typeof occurrence.issue_id === 'string' && typeof occurrence.document_id === 'string';
+    if (!ids.has(occurrence.id) || occurrenceIds.has(occurrence.id) || !itemIds.has(occurrence.item_id)
+      || !validReferences || (occurrence.activity_id !== undefined && occurrence.activity_id !== occurrence.item_id)) {
       throw new Error('Catalog and search occurrence identities do not match.');
     }
     occurrenceIds.add(occurrence.id);
@@ -96,7 +107,8 @@ export async function buildSearch(dataDir = defaultDataDir) {
     }
   }
   if (documentIds.size !== manifest.counts.documents || catalog.occurrences.some((occurrence) =>
-    !issueIds.has(occurrence.issue_id) || !documentIds.has(occurrence.document_id))) {
+    occurrence.kind === 'standalone' ? occurrence.issue_id !== null || occurrence.document_id !== null
+      : !issueIds.has(occurrence.issue_id) || !documentIds.has(occurrence.document_id))) {
     throw new Error('Public issue/document counts or occurrence references do not match.');
   }
   const index = new MiniSearch(searchOptions);

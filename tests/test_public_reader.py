@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import re
 import sqlite3
@@ -47,7 +48,7 @@ def reader(tmp_path, monkeypatch):
     def add_entry(entry_id, *, title="Public event", description="Public details", status="approved", publish_date=None,
                   tag="校级活动", link="https://events.example.org/item", due_time=None, lecture_data=None,
                   use_image=0, entry_type="活动预告"):
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn, conn:
             conn.execute("""INSERT INTO entries
                 (id, uploader, upload_time, title, link, description, describer, reviewer, due_time,
                  status, type, locked_by, lock_time, use_image, publish_date, tag, short_title,
@@ -107,17 +108,18 @@ def test_published_images_are_public_but_draft_images_require_editor_role(reader
     reader.add_entry(12, title="Draft image", status="described", publish_date=today, link="source.png", use_image=1)
     client = reader.test_client()
 
-    assert client.get("/news/11/image").data == b"image payload"
+    with client.get('/news/11/image') as response:
+        assert response.data == b'image payload'
     assert client.get("/news/12/image").status_code == 404
     assert client.get("/editor/entries/12/image").status_code == 401
 
     monkeypatch.setattr(runtime, "get_user_role", lambda username: "editor")
     with client.session_transaction() as session:
         session["username"] = "editor-account"
-    private_image = client.get("/editor/entries/12/image")
-    assert private_image.status_code == 200
-    assert private_image.headers["Cache-Control"] == "private, no-store"
-    assert private_image.data == b"image payload"
+    with client.get('/editor/entries/12/image') as private_image:
+        assert private_image.status_code == 200
+        assert private_image.headers['Cache-Control'] == 'private, no-store'
+        assert private_image.data == b'image payload'
 
 
 def test_search_treats_wildcards_as_literal_and_public_html_escapes_content(reader):
@@ -183,10 +185,10 @@ def test_pdf_is_withdrawn_when_published_content_changes(reader):
     (reader.test_archives / f'{today}.pdf').write_bytes(b'%PDF-public-snapshot')
     (reader.test_archives / f'{today}.json').write_text(json.dumps({'public_signature': public_reader.publication_signature(today)}))
     client = reader.test_client()
-    response = client.get(f'/issues/{today}/pdf')
-    assert response.status_code == 200 and response.data == b'%PDF-public-snapshot'
-    assert response.headers['Cache-Control'] == 'no-store'
-    with public_reader.runtime.connect_db() as conn:
+    with client.get(f'/issues/{today}/pdf') as response:
+        assert response.status_code == 200 and response.data == b'%PDF-public-snapshot'
+        assert response.headers['Cache-Control'] == 'no-store'
+    with closing(public_reader.runtime.connect_db()) as conn, conn:
         conn.execute("UPDATE entries SET description='Corrected public content' WHERE id=40")
     assert client.get(f'/issues/{today}/pdf').status_code == 404
     assert client.get('/api/entries/40').get_json()['description'] == 'Corrected public content'

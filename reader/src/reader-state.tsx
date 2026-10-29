@@ -5,13 +5,14 @@ import { loadDataset } from './data';
 import type { StaticDataset } from './data';
 import { beijingToday, parseFilters, queryCatalog, serializeFilters, sourceTypesForHosts, SOURCE_TYPES } from './filter';
 import { SearchClient } from './search';
-import type { Filters, PublicItemDetail, ReaderMode, ReaderState, ReaderView } from './types';
+import type { CatalogOccurrence, Filters, PublicIssue, PublicItemDetail, ReaderMode, ReaderState, ReaderView } from './types';
 
 const ReaderContext = createContext<ReaderState | null>(null);
 const PREF_KEY = 'nanna-reader.preferences.v1';
 const ITEM_ID = /^item-[a-f0-9]{24}$/;
 const ISSUE_ROUTE = /^\/issues\/issue-[a-f0-9]{24}$/;
-const MODES: Record<string, ReaderMode> = { '/': 'all', '/upcoming': 'upcoming', '/unknown': 'unknown', '/favorites': 'favorites' };
+const MODES: Record<string, ReaderMode> = { '/': 'all', '/activities': 'current', '/history': 'all', '/favorites': 'favorites' };
+const VIEWS: Record<string, ReaderView> = { '/': 'edition', '/activities': 'activities', '/history': 'history', '/favorites': 'favorites', '/issues': 'issues' };
 const emptyCatalog = { items: [], occurrences: [] };
 
 function readPreferences() {
@@ -48,11 +49,11 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [preferences, setPreferences] = useState(readPreferences);
+  const [today, setToday] = useState(beijingToday);
   const [detail, setDetail] = useState<{ key: string; value: PublicItemDetail | null; loading: boolean; error: string | null }>({ key: '', value: null, loading: false, error: null });
   const [search, setSearch] = useState<{ q: string; hits: string[] | null; loading: boolean; error: string | null }>({ q: '', hits: null, loading: false, error: null });
   const searchClient = useRef<SearchClient | null>(null);
   const searchGeneration = useRef(0);
-  const [today, setToday] = useState(beijingToday);
   const params = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const parsed = useMemo(() => {
     try { return { filters: parseFilters(params), error: null }; }
@@ -63,13 +64,40 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   const itemId = /^\/items\/(item-[a-f0-9]{24})$/.exec(path)?.[1] || null;
   const issueId = /^\/issues\/(issue-[a-f0-9]{24})$/.exec(path)?.[1] || null;
   const back = returnPath(params.get('_from'));
-  const activeIssueId = issueId || (itemId && back ? /^\/issues\/(issue-[a-f0-9]{24})$/.exec(back.split('?')[0])?.[1] : undefined);
+  const backIssueId = itemId && back ? /^\/issues\/(issue-[a-f0-9]{24})$/.exec(back.split('?')[0])?.[1] : undefined;
   const backMode = back ? MODES[back.split('?')[0]] : undefined;
   const mode: ReaderMode = MODES[path] || backMode || 'all';
-  const view: ReaderView = itemId ? 'item' : issueId ? 'issue' : path === '/issues' ? 'issues' : MODES[path] || 'all';
-  const routeError = !(path in MODES) && path !== '/issues' && !itemId && !issueId ? '页面不存在，请返回全部消息。' : null;
+  const view: ReaderView = itemId ? 'item' : issueId ? 'issue' : VIEWS[path] || 'edition';
+  const routeError = !(path in VIEWS) && !itemId && !issueId ? '页面不存在，请返回本期消息。' : null;
+  const latestIssue = useMemo(() => {
+    let latest: PublicIssue | null = null;
+    for (const issue of dataset?.issues || []) {
+      if (issue.issue_date && (!latest?.issue_date || issue.issue_date > latest.issue_date)) latest = issue;
+    }
+    return latest;
+  }, [dataset]);
+  const editionIssueId = issueId || backIssueId;
+  const editionIssue = editionIssueId ? dataset?.issues.find((issue) => issue.id === editionIssueId) || null : latestIssue;
+  const activeIssueId = issueId || backIssueId || (view === 'edition' || (itemId && back?.split('?')[0] === '/') ? editionIssue?.id : undefined);
 
   useEffect(() => setActionError(null), [location.key]);
+
+  useEffect(() => {
+    let timer: number;
+    const update = () => setToday(beijingToday());
+    const tick = () => {
+      update();
+      timer = window.setTimeout(tick, 60_000 - Date.now() % 60_000);
+    };
+    tick();
+    window.addEventListener('focus', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,13 +112,6 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
     });
     return () => { active = false; controller.abort(); };
   }, [loadAttempt]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setToday(beijingToday()), 60_000);
-    const update = () => setToday(beijingToday());
-    window.addEventListener('focus', update);
-    return () => { window.clearInterval(timer); window.removeEventListener('focus', update); };
-  }, []);
 
   useEffect(() => {
     const update = (event: StorageEvent) => { if (event.key === PREF_KEY || event.key === null) setPreferences(readPreferences()); };
@@ -143,9 +164,11 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
     [dataset, preferences.favorites]);
 
   const result = useMemo(() => queryCatalog(dataset?.catalog || emptyCatalog, filters, {
-    mode, issueId: activeIssueId || undefined, favorites, followedColleges: preferences.followedColleges,
-    asOf: today, searchHits: filters.q.trim() ? search.q === filters.q.trim() && !search.loading && !search.error ? search.hits || [] : [] : null,
-  }), [dataset, filters, mode, activeIssueId, favorites, preferences.followedColleges, today, search]);
+    mode, asOf: today, issueId: activeIssueId || undefined, favorites, followedColleges: preferences.followedColleges,
+    searchHits: filters.q.trim() ? search.q === filters.q.trim() && !search.loading && !search.error ? search.hits || [] : [] : null,
+  }), [dataset, filters, mode, today, activeIssueId, favorites, preferences.followedColleges, search]);
+  const editionRecords = view === 'edition' || view === 'issue' || backIssueId
+    || (itemId && back?.split('?')[0] === '/') ? result.matchingRecords : emptyCatalog.occurrences;
 
   const options = useMemo(() => {
     const categories = new Set<string>();
@@ -162,12 +185,15 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   const selectedItem = detail.key === itemId ? detail.value : null;
   const selectedOccurrence = selectedItem?.occurrences.find((occurrence) => occurrence.id === params.get('occ'))
     || selectedItem?.occurrences.find((occurrence) => occurrence.id === selectedItem.latest_occurrence_id) || null;
-  const selectedIssue = dataset?.issues.find((issue) => issue.id === (selectedOccurrence?.issue_id || issueId)) || null;
+  const selectedIssue = itemId
+    ? dataset?.issues.find((issue) => issue.id === selectedOccurrence?.issue_id) || null
+    : view === 'edition' || view === 'issue' ? editionIssue : null;
   const missingIssue = dataset && issueId && !selectedIssue ? '未找到这期刊物，可能不在当前数据版本中。' : null;
   const error = actionError || parsed.error || routeError || loadError || (search.q === filters.q.trim() ? search.error : null) || missingIssue;
   const queryString = serializeFilters(filters).toString();
-  const currentList = `${itemId ? '/' : path}${queryString ? `?${queryString}` : ''}`;
-  const listHref = itemId ? back || `/${queryString ? `?${queryString}` : ''}` : issueId ? `/issues${queryString ? `?${queryString}` : ''}` : currentList;
+  const detailList = `${selectedIssue ? `/issues/${encodeURIComponent(selectedIssue.id)}` : '/history'}${queryString ? `?${queryString}` : ''}`;
+  const currentList = `${path}${queryString ? `?${queryString}` : ''}`;
+  const listHref = itemId ? back || detailList : issueId ? `/issues${queryString ? `?${queryString}` : ''}` : currentList;
 
   function updatePreferences(kind: 'favorites' | 'followedColleges', value: string) {
     if (kind === 'favorites' ? !ITEM_ID.test(value) : !options.colleges.includes(value)) return;
@@ -200,15 +226,21 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   const state: ReaderState = {
     status: loading ? 'loading' : error ? 'error' : 'ready', error,
     manifest: dataset?.manifest || null, issues: dataset?.issues || [], view, mode, filters,
+    editionIssue, editionRecords, today,
     records: result.records, total: result.total, page: result.page, pages: result.pages, perPage: result.per_page,
-    searching: Boolean(filters.q.trim()) && (search.loading || search.q !== filters.q.trim()), today,
+    searching: Boolean(filters.q.trim()) && (search.loading || search.q !== filters.q.trim()),
     selectedIssue, selectedItem, selectedOccurrence,
     detailStatus: !itemId ? 'idle' : detail.key !== itemId || detail.loading ? 'loading' : detail.error ? 'error' : selectedItem ? 'ready' : 'loading',
     detailError: detail.key === itemId ? detail.error : null,
     favorites, followedColleges: preferences.followedColleges, preferenceError: preferences.error,
     options,
     setFilters: updateFilters,
-    resetFilters() { navigate({ pathname: routeError ? '/' : location.pathname, search: itemId && back ? `?_from=${encodeURIComponent(back)}` : '' }); },
+    resetFilters() {
+      const query = new URLSearchParams();
+      if (itemId && back) query.set('_from', back);
+      if (itemId && params.has('occ')) query.set('occ', params.get('occ')!);
+      navigate({ pathname: routeError ? '/' : location.pathname, search: query.size ? `?${query}` : '' });
+    },
     setPage(page) { updateFilters({ page }); window.scrollTo({ top: 0, behavior: 'instant' }); },
     toggleFavorite(id) { updatePreferences('favorites', id); },
     toggleFollowedCollege(name) { updatePreferences('followedColleges', name); },
@@ -223,12 +255,15 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
       if (parsed.error || routeError || missingIssue) { navigate('/'); return; }
       setLoadAttempt((attempt) => attempt + 1);
     },
-    itemHref(id) {
+    itemHref(id, occurrenceId) {
+      const canonicalId = dataset?.canonicalItemId(id) ?? id;
       const query = serializeFilters(filters);
-      query.set('_from', itemId ? back || '/' : currentList);
-      const occurrenceId = result.records.find((record) => record.item_id === id)?.id;
-      if (occurrenceId) query.set('occ', occurrenceId);
-      return `/items/${encodeURIComponent(id)}?${query}`;
+      query.set('_from', itemId ? back || detailList : currentList);
+      const records = view === 'edition' || view === 'issue' ? editionRecords : result.records;
+      const selected = selectedItem?.id === canonicalId ? selectedOccurrence?.id : undefined;
+      const exactOccurrence = occurrenceId || selected || records.find((record) => (dataset?.canonicalItemId(record.item_id) ?? record.item_id) === canonicalId)?.id;
+      if (exactOccurrence) query.set('occ', exactOccurrence);
+      return `/items/${encodeURIComponent(canonicalId)}?${query}`;
     },
     issueHref(id) { return `/issues/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`; },
     assetUrl(path) {

@@ -68,8 +68,8 @@ release-image:
     - printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$CI_REGISTRY" "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" > "$HOME/.docker/config.json"
     - buildctl-daemonless.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=deploy/Dockerfile --output "type=image,name=${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG},push=true"
 
-# Opt-in static publication only. The stage script copies an approved whitelist
-# export and rejects extra files; Pages never reads the private database.
+# Opt-in static publication only. Default to reviewed facts in Git; an optional
+# approved resource pack is staged by whitelist. Never read the private database.
 pages:
   stage: pages
   image: node:24-bookworm-slim
@@ -79,10 +79,12 @@ pages:
   script:
     - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
     - export NANNA_COLLECTION_ENABLED=false
-    - test -n "$STATIC_READER_DATA_SOURCE"
     - cd reader
     - npm ci
-    - npm run stage:data -- "$STATIC_READER_DATA_SOURCE"
+    - |
+      if [ -n "${STATIC_READER_DATA_SOURCE:-}" ]; then
+        npm run stage:data -- "$STATIC_READER_DATA_SOURCE"
+      fi
     - npm run build
     - cd ..
     - mv reader/dist public

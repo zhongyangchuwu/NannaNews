@@ -1,4 +1,5 @@
-import type { Catalog, CatalogOccurrence, Filters, Freshness, QueryOptions, QueryResult } from './types';
+import type { Catalog, CatalogDate, CatalogOccurrence, Filters, QueryOptions, QueryResult } from './types';
+import { manualReviewStampData, validDay } from './review-validation.mjs';
 
 export const SOURCE_TYPES = ['官网', '微信公众号', '其他'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
@@ -43,14 +44,47 @@ export function defaultFilters(): Filters {
     date_type: 'event', date_from: '', date_to: '', date_status: 'all', following: false, page: 1 };
 }
 
-function validDay(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const year = Number(value.slice(0, 4));
-  const month = Number(value.slice(5, 7));
-  const day = Number(value.slice(8, 10));
-  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  return day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+
+export function hasVerifiedManualReview(occurrence: CatalogOccurrence): boolean {
+  const review = occurrence.manual_review;
+  return occurrence.content_status === 'human_verified' && manualReviewStampData(review,
+    Boolean(review && Object.hasOwn(review, 'activity'))) && review.status === 'verified';
+}
+
+export function confirmedActivityDate(occurrence: CatalogOccurrence, date: CatalogDate): boolean {
+  if (!['event', 'deadline', 'registration', 'application'].includes(date.kind)
+    || !date.normalized_date || !validDay(date.normalized_date)) return false;
+  if (occurrence.content_status === 'verified' && !occurrence.manual_review) {
+    return date.literal_source === 'primary' && (date.resolution === 'explicit' || date.resolution === 'contextual');
+  }
+  return hasVerifiedManualReview(occurrence) && date.literal_source === 'manual' && date.resolution === 'explicit';
+}
+
+export function manualPublicUrl(raw: string): string | null {
+  if (raw !== raw.trim() || /[\x00-\x20\x7f\\]/.test(raw)) return null;
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    if (!host.includes('.') && !host.startsWith('[')
+      || ['localhost', 'local', 'internal'].some((suffix) => host === suffix || host.endsWith(`.${suffix}`))) return null;
+    if (host.startsWith('[')) {
+      // Public unicast only; mapped IPv4, local, multicast and documentation ranges stay out.
+      const ip = host.slice(1, -1);
+      if (!/^[23][a-f0-9]{3}:/.test(ip) || /^2001:(?:[01]?[a-f0-9]{1,2}|db8):/.test(ip)
+        || /^3fff:/.test(ip)) return null;
+    } else if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+      const [a, b, c, d] = host.split('.').map(Number);
+      if (a === 0 || a === 10 || a === 127 || a >= 224 || a === 100 && b >= 64 && b <= 127
+        || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31
+        || a === 192 && (b === 168 || b === 0 && (c === 2 || c === 0 && d !== 9 && d !== 10))
+        || a === 198 && (b === 18 || b === 19 || b === 51 && c === 100)
+        || a === 203 && b === 0 && c === 113) return null;
+    }
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 function requireDay(value: string, label: string): void {
@@ -106,33 +140,49 @@ export function serializeFilters(filters: Filters): URLSearchParams {
   return params;
 }
 
-export function beijingToday(now: Date = new Date()): string {
-  if (!Number.isFinite(now.getTime())) throw new FilterError('当前时间无效。');
+function resolvedDates(occurrence: CatalogOccurrence, kind: string): string[] {
+  return occurrence.dates.filter((date) => date.kind === kind && (date.resolution === 'explicit' || date.resolution === 'contextual')
+    && date.normalized_date !== null && validDay(date.normalized_date)
+    && (!occurrence.manual_review && occurrence.content_status !== 'human_verified' && date.literal_source !== 'manual'
+      || confirmedActivityDate(occurrence, date)))
+    .map((date) => date.normalized_date!);
+}
+
+export function beijingToday(now = new Date()): string {
   return new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-export function getFreshness(expiry: string | null, asOf: string): Freshness {
-  if (!validDay(asOf)) throw new FilterError('当前日期必须是有效的 YYYY-MM-DD 日期。');
-  if (expiry === null || !validDay(expiry)) return 'unknown';
-  return expiry < asOf ? 'expired' : 'not_expired';
-}
-
-
-function resolvedDates(occurrence: CatalogOccurrence, kind: string): string[] {
-  return occurrence.dates.filter((date) => date.kind === kind && (date.resolution === 'explicit' || date.resolution === 'contextual')
-    && date.normalized_date !== null && validDay(date.normalized_date)).map((date) => date.normalized_date!);
+export function currentActivityDate(occurrence: CatalogOccurrence, asOf: string): CatalogDate | null {
+  if (!validDay(asOf)) return null;
+  let upcoming: CatalogDate | null = null;
+  for (const date of occurrence.dates) {
+    if (!confirmedActivityDate(occurrence, date) || date.normalized_date! < asOf) continue;
+    if (!upcoming || date.normalized_date! < upcoming.normalized_date!) upcoming = date;
+  }
+  return upcoming;
 }
 
 export function queryCatalog(catalog: Catalog, filters: Filters, options: QueryOptions): QueryResult {
   validateFilters(filters);
-  if (!validDay(options.asOf)) throw new FilterError('当前日期必须是有效的 YYYY-MM-DD 日期。');
+  let occurrences = catalog.occurrences;
+  if (options.mode === 'current') {
+    if (!options.asOf || !validDay(options.asOf)) throw new FilterError('当前活动需要有效的 YYYY-MM-DD 参考日期。');
+    const upcoming: { occurrence: CatalogOccurrence; day: string }[] = [];
+    for (const occurrence of occurrences) {
+      const date = currentActivityDate(occurrence, options.asOf);
+      if (date) upcoming.push({ occurrence, day: date.normalized_date! });
+    }
+    // Stable sorting preserves the exported preference order for equal milestones.
+    upcoming.sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : 0);
+    occurrences = upcoming.map(({ occurrence }) => occurrence);
+  }
   const hits = filters.q.trim() ? new Set(options.searchHits ?? []) : null;
   const categories = new Set(filters.category);
   const colleges = new Set(filters.college);
   const sources = new Set(filters.source);
   const seenItems = new Set<string>();
   const matching: CatalogOccurrence[] = [];
-  for (const occurrence of catalog.occurrences) {
+  for (const occurrence of occurrences) {
     if (options.issueId && occurrence.issue_id !== options.issueId) continue;
     if (hits && !hits.has(occurrence.id)) continue;
     if (categories.size && (occurrence.category === null || !categories.has(occurrence.category))) continue;
@@ -148,12 +198,7 @@ export function queryCatalog(catalog: Catalog, filters: Filters, options: QueryO
     if (filters.date_status === 'unknown' && dates.length > 0) continue;
     if ((filters.date_from || filters.date_to) && !dates.some((day) => (!filters.date_from || day >= filters.date_from)
       && (!filters.date_to || day <= filters.date_to))) continue;
-    if (options.mode === 'upcoming' || options.mode === 'unknown') {
-      const freshness = getFreshness(occurrence.expiry_date, options.asOf);
-      if (options.mode === 'upcoming' && freshness !== 'not_expired') continue;
-      if (options.mode === 'unknown' && freshness !== 'unknown') continue;
-    }
-    // The exported order is authoritative (including document/detail tie-breaks).
+    // Eligibility and date ordering precede canonical-item collapse and pagination.
     if (seenItems.has(occurrence.item_id)) continue;
     seenItems.add(occurrence.item_id);
     matching.push(occurrence);
@@ -161,5 +206,6 @@ export function queryCatalog(catalog: Catalog, filters: Filters, options: QueryO
   const total = matching.length;
   const pages = Math.max(1, Math.ceil(total / 20));
   const page = Math.min(filters.page, pages);
-  return { records: matching.slice((page - 1) * 20, page * 20), total, page, pages, per_page: 20 };
+  return { records: matching.slice((page - 1) * 20, page * 20), matchingRecords: matching,
+    total, page, pages, per_page: 20 };
 }

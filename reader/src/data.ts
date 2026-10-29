@@ -1,9 +1,12 @@
 import type { Catalog, Manifest, PublicDate, PublicIssue, PublicItemDetail, PublicOccurrence } from './types';
+import { manualPublicUrl } from './filter';
+import { manualReviewStampData, validDay, withinTextLimit } from './review-validation.mjs';
 
 const VERSION = /^[a-f0-9]{64}$/;
 const ITEM_ID = /^item-[a-f0-9]{24}$/;
 const OCC_ID = /^occ-[a-f0-9]{24}$/;
 const ISSUE_ID = /^issue-[a-f0-9]{24}$/;
+const SOURCE_ID = /^source-[a-f0-9]{24}$/;
 const dataRoot = new URL('data/', new URL(import.meta.env.BASE_URL, document.baseURI));
 
 type JsonObject = Record<string, unknown>;
@@ -23,10 +26,74 @@ const ACTIVITY_FIELD_LENGTHS = {
   organizer: 500, audience: 1500, participation: 3000, time: 1000,
 } as const;
 const ACTIVITY_KEYS = [...Object.keys(ACTIVITY_FIELD_LENGTHS), 'colleges', 'image_indices'];
+const CATALOG_FACT_KEYS = ['venue', 'audience', 'participation', 'time'] as const;
+
+function catalogFactsData(value: unknown, status: unknown): boolean {
+  if (value === undefined) return true;
+  if (!['verified', 'human_verified'].includes(String(status)) || !object(value) || !exactKeys(value, CATALOG_FACT_KEYS)) return false;
+  return CATALOG_FACT_KEYS.every((key) => {
+    const field = value[key];
+    return field === null || (typeof field === 'string' && field.trim().length > 0
+      && withinTextLimit(field, ACTIVITY_FIELD_LENGTHS[key]));
+  });
+}
 
 function exactKeys(value: JsonObject, expected: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function manualActivityData(value: unknown): boolean {
+  if (!object(value) || !exactKeys(value, [...Object.keys(ACTIVITY_FIELD_LENGTHS), 'category', 'source_urls', 'dates'])) return false;
+  for (const [key, limit] of Object.entries({ ...ACTIVITY_FIELD_LENGTHS, content: 60000, category: 200 })) {
+    const field = value[key];
+    if (['title', 'summary', 'content'].includes(key)) {
+      if (typeof field !== 'string' || !withinTextLimit(field, limit) || key !== 'summary' && !field.trim()) return false;
+    } else if (field !== null && (typeof field !== 'string' || !field.trim() || !withinTextLimit(field, limit))) return false;
+  }
+  if (!stringArray(value.source_urls) || value.source_urls.length > 100
+    || !value.source_urls.every((url) => manualPublicUrl(url))
+    || new Set(value.source_urls).size !== value.source_urls.length
+    || !Array.isArray(value.dates) || value.dates.length > 100) return false;
+  const seen = new Set<string>();
+  return value.dates.every((date) => {
+    if (!object(date) || !exactKeys(date, ['kind', 'date'])
+      || !['event', 'deadline', 'registration', 'application'].includes(String(date.kind))
+      || typeof date.kind !== 'string' || typeof date.date !== 'string' || !validDay(date.date)) return false;
+    const key = `${date.kind}/${date.date}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function manualOccurrenceData(value: JsonObject, detail: boolean, factsOnly = false): boolean {
+  const review = value.manual_review;
+  if (review === undefined) return value.content_status !== 'human_verified';
+  const compactStamp = detail && factsOnly && object(review) && !Object.hasOwn(review, 'activity');
+  if (!manualReviewStampData(review, detail && !compactStamp) || !object(review)
+    || value.content_status !== (review.status === 'verified' ? 'human_verified' : 'needs_review')) return false;
+  if (detail && !compactStamp && !manualActivityData(review.activity)) return false;
+  if (review.status === 'needs_review') return Array.isArray(value.dates) && value.dates.length === 0
+    && value.activity_facts === undefined && value.expiry_date === null;
+  if (!object(value.activity_facts)) return false;
+  if (!Array.isArray(value.dates) || value.dates.length > 100 || !value.dates.every((date) => object(date)
+    && exactKeys(date, ['kind', 'normalized_date', 'resolution', 'literal_source', ...(detail ? ['raw_text', 'evidence'] : [])])
+    && typeof date.kind === 'string' && ['event', 'deadline', 'registration', 'application'].includes(date.kind)
+    && date.literal_source === 'manual' && date.resolution === 'explicit'
+    && typeof date.normalized_date === 'string' && validDay(date.normalized_date)
+    && (!detail || compactStamp || date.raw_text === date.normalized_date
+      && (date.evidence === review.reason || value.kind === 'standalone' && date.evidence === '')))) return false;
+  if (new Set(value.dates.map((date) => `${date.kind}/${date.normalized_date}`)).size !== value.dates.length) return false;
+  if (detail && !compactStamp && object(review.activity)) {
+    const activity = review.activity;
+    const facts = value.activity_facts;
+    if (!CATALOG_FACT_KEYS.every((key) => facts[key] === activity[key])) return false;
+    const dates = activity.dates as JsonObject[];
+    if (value.dates.length !== dates.length || !value.dates.every((date) => object(date)
+      && dates.some((entry) => entry.kind === date.kind && entry.date === date.normalized_date))) return false;
+  }
+  return true;
 }
 
 function publicHttpUrl(value: string): boolean {
@@ -41,7 +108,7 @@ function publicHttpUrl(value: string): boolean {
 function activityCitationData(value: unknown, sources: unknown[]): boolean {
   return object(value) && exactKeys(value, ['url', 'text', 'image_index'])
     && typeof value.url === 'string' && publicHttpUrl(value.url) && typeof value.text === 'string'
-    && value.text.length > 0 && value.text.trim().length > 0 && value.text.length <= 4000
+    && value.text.length > 0 && value.text.trim().length > 0 && withinTextLimit(value.text, 4000)
     && (value.image_index === null || (Number.isSafeInteger(value.image_index) && Number(value.image_index) >= 0))
     && sources.some((source) => object(source) && source.url === value.url && Array.isArray(source.quotes)
       && source.quotes.some((quote) => typeof quote === 'string' && quote.includes(value.text as string)));
@@ -53,7 +120,7 @@ function activityFieldData(value: unknown, maxLength: number, sources: unknown[]
     || !value.evidence.every((citation) => activityCitationData(citation, sources))) return false;
   return value.value === null
     ? value.evidence.length === 0
-    : value.value.trim().length > 0 && value.value.length <= maxLength && value.evidence.length > 0;
+    : value.value.trim().length > 0 && withinTextLimit(value.value, maxLength) && value.evidence.length > 0;
 }
 
 function activityData(value: unknown, sources: unknown[]): boolean {
@@ -144,9 +211,12 @@ async function fetchJson(url: string, signal?: AbortSignal, manifest = false): P
 }
 
 function manifestData(value: unknown): Manifest {
+  const compactFacts = object(value) && value.public_facts_only === true;
   requireData(object(value) && value.schema_version === 2 && value.generator === 'webnews-static-v2'
     && typeof value.data_version === 'string' && VERSION.test(value.data_version)
-    && typeof value.generated_at === 'string' && object(value.files) && object(value.counts));
+    && (compactFacts ? value.generated_at === undefined : typeof value.generated_at === 'string')
+    && object(value.files) && object(value.counts));
+  requireData(value.public_facts_only === undefined || typeof value.public_facts_only === 'boolean');
   requireData(value.content_rules_version === undefined || typeof value.content_rules_version === 'string');
   for (const name of ['catalog', 'issues', 'search_documents', 'search_index']) {
     requireData(typeof value.files[name] === 'string');
@@ -158,20 +228,34 @@ function manifestData(value: unknown): Manifest {
   return value as unknown as Manifest;
 }
 
-function occurrenceData(value: unknown): boolean {
-  return object(value) && typeof value.id === 'string' && OCC_ID.test(value.id)
-    && typeof value.item_id === 'string' && ITEM_ID.test(value.item_id)
-    && typeof value.issue_id === 'string' && ISSUE_ID.test(value.issue_id)
-    && typeof value.document_id === 'string' && VERSION.test(value.document_id)
-    && ['summary', 'detail', 'notice'].includes(String(value.kind))
+function occurrenceData(value: unknown, detail = false, factsOnly = false): boolean {
+  if (!object(value) || typeof value.id !== 'string' || !OCC_ID.test(value.id)
+    || typeof value.item_id !== 'string' || !ITEM_ID.test(value.item_id)) return false;
+  const standalone = value.kind === 'standalone';
+  const validReferences = standalone
+    ? value.issue_id === null && value.document_id === null && value.issue_date === null
+      && value.activity_id === value.item_id && typeof value.source_id === 'string' && SOURCE_ID.test(value.source_id)
+    : typeof value.issue_id === 'string' && ISSUE_ID.test(value.issue_id)
+      && typeof value.document_id === 'string' && VERSION.test(value.document_id);
+  return validReferences && (value.activity_id === undefined || value.activity_id === value.item_id)
+    && (value.source_id === undefined || (typeof value.source_id === 'string' && SOURCE_ID.test(value.source_id)))
+    && ['summary', 'detail', 'notice', 'standalone'].includes(String(value.kind))
     && typeof value.title === 'string' && nullableString(value.category)
     && typeof value.preview === 'string' && nullableString(value.issue_date)
     && nullableString(value.expiry_date) && Number.isSafeInteger(value.image_count)
     && stringArray(value.source_urls) && stringArray(value.source_hosts) && stringArray(value.colleges)
     && sourceCorrectionsData(value.source_corrections)
+    && (value.content_status === undefined || (typeof value.content_status === 'string'
+      && ['verified', 'human_verified', 'conflict', 'unconfirmed', 'unreviewed', 'legacy', 'source_corrected', 'needs_review'].includes(value.content_status)))
+    && manualOccurrenceData(value, detail, factsOnly)
+    && catalogFactsData(value.activity_facts, value.content_status)
     && Array.isArray(value.dates) && value.dates.every((date) => object(date)
       && typeof date.kind === 'string' && nullableString(date.normalized_date)
-      && ['explicit', 'contextual', 'year_unknown', 'invalid', 'ambiguous'].includes(String(date.resolution)));
+      && ['explicit', 'contextual', 'year_unknown', 'invalid', 'ambiguous'].includes(String(date.resolution))
+      && (date.literal_source === undefined || (typeof date.literal_source === 'string'
+        && (['primary', 'bulletin'].includes(date.literal_source)
+          || date.literal_source === 'manual' && value.content_status === 'human_verified' && object(value.manual_review)
+            && value.manual_review.status === 'verified'))));
 }
 
 function catalogData(value: unknown, manifest: Manifest): Catalog {
@@ -193,7 +277,7 @@ function catalogData(value: unknown, manifest: Manifest): Catalog {
     aliases.add(alias);
   }
   for (const occurrence of value.occurrences) {
-    requireData(occurrenceData(occurrence) && itemIds.has(occurrence.item_id) && !occurrenceIds.has(occurrence.id));
+    requireData(occurrenceData(occurrence, false, manifest.public_facts_only) && itemIds.has(occurrence.item_id) && !occurrenceIds.has(occurrence.id));
     occurrenceIds.add(occurrence.id);
   }
   for (const item of value.items) requireData(occurrenceIds.has(item.latest_occurrence_id));
@@ -227,7 +311,7 @@ function detailData(value: unknown, id: string, manifest: Manifest): PublicItemD
   requireData(object(value) && value.id === id && typeof value.latest_occurrence_id === 'string'
     && Array.isArray(value.occurrences) && value.occurrences.length > 0);
   for (const occurrence of value.occurrences) {
-    requireData(occurrenceData(occurrence) && occurrence.item_id === id && typeof occurrence.body_text === 'string'
+    requireData(occurrenceData(occurrence, true, manifest.public_facts_only) && occurrence.item_id === id && typeof occurrence.body_text === 'string'
       && object(occurrence.locator) && Array.isArray(occurrence.table_cells) && Array.isArray(occurrence.college_mentions)
       && Array.isArray(occurrence.images)
       && (occurrence.original_dates === undefined || (Array.isArray(occurrence.original_dates) && occurrence.original_dates.every(publicDateData)))
@@ -247,7 +331,7 @@ function detailData(value: unknown, id: string, manifest: Manifest): PublicItemD
       staticUrl((image as JsonObject).path as string, manifest.data_version);
     }
     for (const date of occurrence.dates) requireData(typeof date.raw_text === 'string' && typeof date.evidence === 'string'
-      && (!Object.hasOwn(date, 'literal_source') || ['primary', 'bulletin'].includes(String(date.literal_source))));
+      && (!Object.hasOwn(date, 'literal_source') || ['primary', 'bulletin', 'manual'].includes(String(date.literal_source))));
     requireData(occurrence.table_cells.every((cell: unknown) => object(cell) && typeof cell.header === 'string' && typeof cell.text === 'string'));
     requireData(occurrence.college_mentions.every((college: unknown) => object(college) && typeof college.name === 'string'
       && ['mentioned', 'audience'].includes(String(college.relation)) && typeof college.evidence === 'string'));
@@ -274,8 +358,12 @@ export async function loadDataset(signal?: AbortSignal): Promise<StaticDataset> 
   ]);
   const catalog = catalogData(rawCatalog, manifest);
   const issues = issuesData(rawIssues, manifest);
-  const issueIds = new Set(issues.map((issue) => issue.id));
-  requireData(catalog.occurrences.every((occurrence) => issueIds.has(occurrence.issue_id)));
+  const documentsByIssue = new Map(issues.map((issue) => [issue.id, new Set(issue.documents.map((document) => document.id))]));
+  requireData(catalog.occurrences.every((occurrence) => {
+    if (occurrence.kind === 'standalone') return occurrence.issue_id === null && occurrence.document_id === null;
+    if (typeof occurrence.issue_id !== 'string' || typeof occurrence.document_id !== 'string') return false;
+    return documentsByIssue.get(occurrence.issue_id)?.has(occurrence.document_id) === true;
+  }));
   const items = new Map(catalog.items.map((item) => [item.id, item]));
   for (const item of catalog.items) for (const alias of item.aliases) items.set(alias, item);
   const shards = new Map<string, JsonObject>();

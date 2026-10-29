@@ -6,6 +6,8 @@
 /data/
 /nanna-data/
 /backups/
+/.ci-data/
+/local-data/
 *.db
 *.db-*
 *.sqlite
@@ -39,4 +41,5 @@ venv/
 reader/node_modules/
 reader/dist/
 reader/public/data/
+!/reader/public/activity-facts.json
 reader/*.tsbuildinfo
