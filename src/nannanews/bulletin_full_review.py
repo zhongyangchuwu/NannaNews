@@ -10,8 +10,10 @@ import base64
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import sqlite3
@@ -32,7 +34,8 @@ TIMING_WINDOW = 100
 BEIJING = timezone(timedelta(hours=8))
 TERMINAL_PHASES = {'completed', 'stopped', 'failed'}
 OPERATIONAL_PAUSES = {'daily_priority', 'disk_low', 'stop_requested', 'operator_pause',
-                      'quality_circuit', 'request_budget', 'scope_changed', 'configuration_changed'}
+                      'quality_circuit', 'request_budget', 'scope_changed', 'configuration_changed',
+                      'transport_cooldown'}
 INTENTIONAL_PAUSES = {'daily_priority', 'operator_pause', 'stop_requested'}
 MONITOR_ALERT_FORMAT = 'nanna-full-review-monitor-alerts-v1'
 MAX_MONITOR_ALERT_BYTES = 256 * 1024
@@ -85,6 +88,8 @@ def _source_coverage_kind(record):
 
 def _model_quality_kind(result, category):
     if result.get('paid_failure'):
+        if result.get('model_transport_failure') is True and _transient_model_failure(result):
+            return 'transport_failure'
         failure_code = result.get('model_failure_code')
         if isinstance(failure_code, str):
             if failure_code in MODEL_TRANSPORT_FAILURE_CODES:
@@ -101,6 +106,41 @@ def _model_quality_kind(result, category):
     if category in {'primary_confirmed', 'model_terminal_unconfirmed'} or result.get('terminal'):
         return 'valid_unconfirmed'
     return 'unknown_outcome'
+
+
+def _transport_fields(result):
+    fields = {}
+    if result.get('model_transport_failure') is True:
+        fields['model_transport_failure'] = True
+    status = result.get('model_http_status')
+    if type(status) is int and 100 <= status <= 599:
+        fields['model_http_status'] = status
+    retry = result.get('model_retry_after_seconds')
+    if type(retry) in (int, float) and retry > 0 and (type(retry) is int or math.isfinite(retry)):
+        fields['model_retry_after_seconds'] = retry
+    return fields
+
+
+def _transient_model_failure(facts):
+    status = _transport_fields(facts).get('model_http_status')
+    # A truncated refusal is still a refusal, never permission to auto-resume.
+    if status is not None and 400 <= status <= 499 and status not in {408, 429}:
+        return False
+    code = facts.get('model_failure_code')
+    if code == 'model_unavailable':
+        return True
+    if code not in {'model_http_error', 'model_response_invalid'}:
+        # Audit/preparation/evidence failures stay manual even if earlier HTTP
+        # facts survive alongside their final, authoritative failure code.
+        return False
+    if facts.get('model_transport_failure') is True:
+        return True
+    return code == 'model_http_error' and (status in {408, 429} or
+        (status is not None and 500 <= status <= 599))
+
+
+def _cooldown_remaining(until, now):
+    return max(0, (datetime.fromisoformat(until) - now).total_seconds()) if until else 0
 
 
 def _model_quality_degraded(metrics):
@@ -638,6 +678,8 @@ class FullReviewWorker:
             'terminal': False, 'current_occurrence': None, 'last_progress_at': _stamp(),
             'last_output': None, 'last_output_at': None, 'pause_reason': None}
         self.quality_failures = 0
+        self.transport_failures = 0
+        self.cooldown_until = None
         self.model_quality_totals = Counter({kind: 0 for kind in MODEL_QUALITY_KINDS})
         self.model_quality_window = deque(maxlen=MODEL_QUALITY_WINDOW)
         self.timing_totals = {}
@@ -686,6 +728,106 @@ class FullReviewWorker:
                 'model_terminal_failed': 'model_failure_unknown',
             }.get(event.get('category'), 'unknown_outcome')
         self._record_model_quality(kind)
+
+    def _failure_policy(self, kind, facts, at):
+        # Free/reused outcomes never reach this transition: only a new paid response
+        # can prove provider recovery or reset the independent content-quality streak.
+        if kind in {'verified', 'valid_unconfirmed'}:
+            self.quality_failures = 0
+            self.transport_failures = 0
+            self.cooldown_until = None
+        elif kind in MODEL_QUALITY_FAILURE_KINDS:
+            transient = _transient_model_failure(facts)
+            if transient:
+                self.transport_failures += 1
+                seconds = max(600 if self.transport_failures == 1 else 1800,
+                              _transport_fields(facts).get('model_retry_after_seconds', 0))
+                try:
+                    until = datetime.fromisoformat(at) + timedelta(seconds=seconds)
+                except OverflowError:
+                    until = datetime.max.replace(tzinfo=timezone.utc)
+                self.cooldown_until = until.isoformat()
+            else:
+                self.quality_failures += 1
+
+    def _attempt_metadata(self, key):
+        if not self.attempt_store.path.exists():
+            return None
+        with _readonly(self.attempt_store.path) as db:
+            row = db.execute('SELECT state,finished_at,error FROM historical_attempts '
+                             'WHERE request_sha256=?', (key,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def _attempt_failure_facts(self, key):
+        if not self.attempt_store.path.exists():
+            return None
+        # Indexed metadata only: replay must not load paid request/response payloads.
+        with _readonly(self.attempt_store.path) as db:
+            row = db.execute('''SELECT state,finished_at,error,
+                CASE WHEN json_valid(decision_json) THEN
+                    CASE WHEN json_type(decision_json,'$._model_failure_code')='text'
+                              AND length(json_extract(decision_json,'$._model_failure_code'))<=80
+                         THEN json_extract(decision_json,'$._model_failure_code') END
+                END AS model_failure_code,
+                CASE WHEN json_valid(decision_json) THEN
+                    CASE WHEN json_type(decision_json,'$._model_http_status')='integer'
+                              AND json_extract(decision_json,'$._model_http_status') BETWEEN 100 AND 599
+                         THEN json_extract(decision_json,'$._model_http_status') END
+                END AS model_http_status,
+                CASE WHEN json_valid(decision_json) THEN
+                    CASE WHEN json_type(decision_json,'$._model_retry_after_seconds') IN ('integer','real')
+                              AND json_extract(decision_json,'$._model_retry_after_seconds')>0
+                              AND json_extract(decision_json,'$._model_retry_after_seconds')<=1.7976931348623157e308
+                         THEN json_extract(decision_json,'$._model_retry_after_seconds') END
+                END AS model_retry_after_seconds,
+                CASE WHEN json_valid(decision_json) THEN
+                    CASE WHEN json_type(decision_json,'$._model_transport_failure')='true' THEN 1 END
+                END AS model_transport_failure
+                FROM historical_attempts WHERE request_sha256=? AND state='failed' ''', (key,)).fetchone()
+        if row is None:
+            return None
+        metadata = dict(row)
+        metadata['model_transport_failure'] = metadata['model_transport_failure'] == 1
+        if metadata['model_failure_code'] not in (MODEL_TRANSPORT_FAILURE_CODES |
+                MODEL_MALFORMED_FAILURE_CODES | {'model_audit_failed', 'model_preparation_failed'}):
+            metadata['model_failure_code'] = None
+        return metadata
+
+    def _replay_failure_policy(self, event, previous, intent):
+        if previous['state'] == 'failed' and (event is None or not event.get('model_failure_code')
+                or 'transport_failures' not in event or 'cooldown_until' not in event):
+            # Current outcomes are self-contained. Only an incomplete/missing
+            # failed outcome needs indexed scalar recovery from the paid ledger.
+            previous = {**previous, **(self._attempt_failure_facts(intent['request_sha256']) or {})}
+        facts = {**_transport_fields(previous), **_transport_fields(event or {})}
+        code = (event or {}).get('model_failure_code') or previous.get('model_failure_code')
+        if code:
+            facts['model_failure_code'] = code
+        kind = (event or {}).get('model_quality_kind')
+        if kind not in MODEL_QUALITY_KINDS:
+            kind = ('model_failure_unknown' if previous['state'] == 'failed' else
+                    'valid_unconfirmed' if previous['state'] == 'completed' else 'unknown_outcome')
+        if (facts.get('model_failure_code') in {None, 'model_http_error'}
+                and kind in {'transport_failure', 'model_failure_unknown'} and not facts.get('model_http_status')):
+            match = re.fullmatch(r'模型 API 返回 HTTP ([1-5][0-9]{2})；未创建草稿，不会自动重试。',
+                                 previous.get('error') or '')
+            if match:
+                facts['model_http_status'] = int(match.group(1))
+                facts['model_failure_code'] = 'model_http_error'
+            elif not facts.get('model_failure_code') and previous.get('error') in {
+                    '模型 API 域名解析失败或超时。请管理员检查配置。',
+                    '模型 API 无可连接地址或连接超时。请管理员检查配置。',
+                    '模型 API 连接或审计写入失败；不会自动重试。'}:
+                facts['model_failure_code'] = 'model_unavailable'
+        if (kind in MODEL_QUALITY_FAILURE_KINDS
+                and previous.get('error') == '模型 API 响应不完整，未创建草稿。'):
+            # Legacy counters remain in their recorded metric category; only the
+            # operational cooldown/circuit reconstruction uses this safe fact.
+            facts['model_transport_failure'] = True
+            if not facts.get('model_failure_code'):
+                facts['model_failure_code'] = 'model_response_invalid'
+        self._failure_policy(kind, facts,
+            (event or {}).get('at') or previous.get('finished_at') or intent['at'])
 
     def _model_quality_summary(self):
         rolling_counts = Counter(self.model_quality_window)
@@ -796,32 +938,43 @@ class FullReviewWorker:
                                 raise ValueError('Progress references a different occurrence capture.')
                         self._record_source_coverage(identity, capture)
                         self.done[identity] = _category(capture, False, value.get('progress'), code)
+        pending_intent = None
         for path in sorted((self.output / 'journal').glob('event-*.json')):
             event = _load(path, 65536)
             self.journal_mtime = path.stat().st_mtime
             self.journal_index = max(self.journal_index, int(path.stem.split('-')[1]))
+            if event.get('event') in {'intent', 'quality_acknowledged'} and pending_intent:
+                intent, previous = pending_intent
+                self._replay_failure_policy(None, previous, intent)
+                pending_intent = None
             if event.get('event') == 'intent':
                 key = event['request_sha256']
                 if key not in self.intents:
                     self.intents[key] = event
-                    previous = self.attempt_store.lookup(key)
+                    previous = self._attempt_metadata(key)
                     if previous is not None:
                         self.counters['model_request_attempts'] += 1
+                        pending_intent = (event, previous)
                         if previous['state'] == 'failed':
-                            self.quality_failures += 1
                             identity = event['occurrence_id']
                             if self.done.get(identity) == 'model_terminal_unconfirmed':
                                 self.done[identity] = 'model_terminal_failed'
-                        elif previous['state'] == 'completed':
-                            self.quality_failures = 0
             elif event.get('event') == 'quality_acknowledged':
                 self.quality_failures = 0
             elif event.get('event') == 'outcome':
                 identity = event.get('occurrence_id')
+                if event.get('new_request') and pending_intent:
+                    intent, previous = pending_intent
+                    if identity == intent['occurrence_id']:
+                        self._replay_failure_policy(event, previous, intent)
+                        pending_intent = None
                 if identity not in self.done:
                     self._record_source_coverage(identity, kind=event.get('source_coverage'))
                 self._quality_from_event(event)
                 self._record_timing(event.get('_timing'))
+        if pending_intent:
+            intent, previous = pending_intent
+            self._replay_failure_policy(None, previous, intent)
         missing = self.prior_attempt_protected_ids.difference(self.done)
         self.status['protected_prior_attempts_without_result'] = len(missing)
         for identity in missing:
@@ -900,6 +1053,8 @@ class FullReviewWorker:
             _atomic(self.output / 'state.json', {'run_id': self.scope['run_id'], 'updated_at': _stamp(),
                     'counts': dict(counts), 'quality_failures': self.quality_failures,
                     'consecutive_quality_failures': self.quality_failures,
+                    'transport_failures': self.transport_failures, 'cooldown_until': self.cooldown_until,
+                    'cooldown_remaining_seconds': _cooldown_remaining(self.cooldown_until, _now()),
                     'model_quality': model_quality, 'source_coverage': source_coverage,
                     'request_resolution': request_resolution, 'activity_coverage': activity_coverage,
                     '_timing': self._timing_summary()})
@@ -913,6 +1068,9 @@ class FullReviewWorker:
             # quality_failures is the consecutive circuit counter, not lifetime failures.
             self.status['quality_failures'] = self.quality_failures
             self.status['consecutive_quality_failures'] = self.quality_failures
+            self.status['transport_failures'] = self.transport_failures
+            self.status['cooldown_until'] = self.cooldown_until
+            self.status['cooldown_remaining_seconds'] = _cooldown_remaining(self.cooldown_until, _now())
             self.status['model_quality'] = self._model_quality_summary()
             self.status['source_coverage'] = self._source_coverage_summary()
             self.status['_timing'] = self._timing_summary()
@@ -924,8 +1082,8 @@ class FullReviewWorker:
         if not result.get('new_request'):
             return None
         with self.status_lock:
-            self.quality_failures = self.quality_failures + 1 if result.get('paid_failure') else 0
             kind = _model_quality_kind(result, category)
+            self._failure_policy(kind, result, _stamp())
             self._record_model_quality(kind)
             return kind
 
@@ -953,7 +1111,14 @@ class FullReviewWorker:
         with _readonly(self.database) as db:
             if _signature(db) != self.scope['signature']:
                 return 'scope_changed'
-        return daily_pause_reason(self.settings)
+        reason = daily_pause_reason(self.settings)
+        if reason:
+            return reason
+        if _cooldown_remaining(self.cooldown_until, _now()) > 0:
+            if self.counters['model_request_attempts'] >= self.scope['max_new_requests']:
+                return 'request_budget'
+            return 'transport_cooldown'
+        return None
 
     def request_gate(self, request_key, captured_review):
         reason = self.pause_reason()
@@ -1019,7 +1184,8 @@ class FullReviewWorker:
                             self._journal('quality_acknowledged')
                             self._checkpoint()
                             continue
-                        self.stop.wait(60)
+                        remaining = _cooldown_remaining(self.cooldown_until, _now())
+                        self.stop.wait(min(60, remaining) if reason == 'transport_cooldown' else 60)
                         continue
                     self._publish(phase='reviewing', pause_reason=None)
                     storage = self._storage()
@@ -1065,6 +1231,8 @@ class FullReviewWorker:
                     path = self._journal('outcome', occurrence_id=identity, category=category,
                         terminal=result['terminal'], progress=result.get('progress'),
                         new_request=bool(result.get('new_request', False)), quality_failures=self.quality_failures,
+                        model_failure_code=result.get('model_failure_code'), **_transport_fields(result),
+                        transport_failures=self.transport_failures, cooldown_until=self.cooldown_until,
                         model_quality_kind=model_quality_kind, source_coverage=source_coverage, output=artifact,
                         _timing=result.get('_timing'))
                     self._publish(last_progress_at=_stamp(), last_output=artifact or str(path), last_output_at=_stamp())
@@ -1210,7 +1378,10 @@ def monitor_observation(output_dir, now=None):
     model_quality = status.get('model_quality') if isinstance(status.get('model_quality'), dict) else {}
     source_coverage = status.get('source_coverage') if isinstance(status.get('source_coverage'), dict) else {}
     consecutive_failures = status.get('consecutive_quality_failures', status.get('quality_failures'))
-    intentional_pause = status.get('phase') == 'paused' and status.get('pause_reason') in INTENTIONAL_PAUSES
+    cooldown_remaining = _cooldown_remaining(status.get('cooldown_until'), clock)
+    intentional_pause = (status.get('phase') == 'paused' and
+        (status.get('pause_reason') in INTENTIONAL_PAUSES or
+         (status.get('pause_reason') == 'transport_cooldown' and cooldown_remaining > 0)))
     warnings = []
     if status.get('phase') == 'failed':
         warnings.append('worker_failed')
@@ -1254,6 +1425,8 @@ def monitor_observation(output_dir, now=None):
         'pause_reason': status.get('pause_reason'), 'counts': status.get('counts', {}),
         'protected_prior_attempts_without_result': status.get('protected_prior_attempts_without_result', 0),
         'quality_failures': consecutive_failures, 'consecutive_quality_failures': consecutive_failures,
+        'transport_failures': status.get('transport_failures', 0),
+        'cooldown_until': status.get('cooldown_until'), 'cooldown_remaining_seconds': cooldown_remaining,
         'model_quality': model_quality, 'source_coverage': source_coverage,
         '_timing': status.get('_timing') if isinstance(status.get('_timing'), dict) else None,
         'pause_intentional': intentional_pause,

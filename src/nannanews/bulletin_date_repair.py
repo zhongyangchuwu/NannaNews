@@ -815,7 +815,8 @@ def reuse_completed_review(previous, occurrence, original_claims, *, model_name,
 
 
 def model_decision(occurrence, original_claims, *, source_cache=None, attempt_store=None, counters=None,
-                   storage_check=None, request_gate=None, original_occurrence_resolver=None, _timing=None):
+                   storage_check=None, request_gate=None, original_occurrence_resolver=None, _timing=None,
+                   audit_context=None, reuse_completed=True):
     """Review dates against linked primary sources; fetched evidence stays auditable."""
     from nannanews import acquisition
     from nannanews.bulletin_historical_attempts import AttemptBlocked, StorageBlocked, logical_request
@@ -913,8 +914,13 @@ def model_decision(occurrence, original_claims, *, source_cache=None, attempt_st
         if request_gate is not None and attempt_store is None:
             raise ReviewDeferred('attempt_store_required',
                 'Operational review admission requires the canonical historical attempt store; no model request was sent.')
-        kwargs = {'response_schema': schema, 'audit_ready': audit_ready,
-                  'audit_context': {'logical_request_sha256': request_key, 'rules_version': RULES_VERSION}}
+        context = {key: None for key in ('activity_id', 'item_id', 'occurrence_id', 'source_id')}
+        context.update({key: occurrence[key] for key in context
+                        if isinstance(occurrence.get(key), str)})
+        if audit_context is not None:
+            context.update(audit_context)
+        context.update(logical_request_sha256=request_key, rules_version=RULES_VERSION)
+        kwargs = {'response_schema': schema, 'audit_ready': audit_ready, 'audit_context': context}
         if attempt_store is not None:
             model_name = acquisition._model_config().model_name
             request_key, request_json = logical_request(occurrence, original_claims, source_data,
@@ -943,21 +949,26 @@ def model_decision(occurrence, original_claims, *, source_cache=None, attempt_st
                     'model_audit_failed', 503) from None
     except ReviewDeferred as error:
         counters['deferred_reviews'] += 1
-        return diagnosed({'claims': [], 'rules_version': RULES_VERSION, 'origin': 'luna_review',
+        decision = {'claims': [], 'rules_version': RULES_VERSION, 'origin': 'luna_review',
             'reviewer': 'luna:unavailable', 'status': 'unresolved', 'reason': error.reason,
-            'source_review': _validate_source_review(base_review), '_review_deferred': error.code})
+            'source_review': _validate_source_review(base_review), '_review_deferred': error.code}
+        if audit_identity is not None:
+            decision['_model_audit'] = audit_identity
+        return diagnosed(decision)
     except StorageBlocked as error:
         counters['preparation_failures'] += 1
         counters['storage_blocked'] += 1
         decision = _unresolved_decision(dict(base_review, sources=[], attempts=[]), str(error))
         decision['_storage_blocked'] = {'capture_artifact': error.capture_artifact, 'reason': str(error)}
+        if audit_identity is not None:
+            decision['_model_audit'] = audit_identity
         return diagnosed(decision)
     except AttemptBlocked as error:
         previous = error.previous
         original_occurrence = (original_occurrence_resolver(previous['request_sha256'])
             if previous.get('state') == 'completed' and original_occurrence_resolver is not None else None)
-        previous_decision = reuse_completed_review(previous, occurrence, original_claims,
-            model_name=model_name, original_occurrence=original_occurrence)
+        previous_decision = (reuse_completed_review(previous, occurrence, original_claims,
+            model_name=model_name, original_occurrence=original_occurrence) if reuse_completed else None)
         if previous_decision is not None:
             counters['reused_reviews'] += 1
             return diagnosed(previous_decision)
@@ -967,6 +978,8 @@ def model_decision(occurrence, original_claims, *, source_cache=None, attempt_st
         decision = _unresolved_decision(base_review, reason)
         decision['_request_pending'] = previous['request_sha256']
         decision['_request_state'] = previous['state']
+        if audit_identity is not None:
+            decision['_model_audit'] = audit_identity
         return diagnosed(decision)
     except Exception as error:
         reason = str(error) if isinstance(error, acquisition.AcquisitionError) else (
@@ -975,6 +988,15 @@ def model_decision(occurrence, original_claims, *, source_cache=None, attempt_st
         decision = _unresolved_decision(base_review, reason)
         code = getattr(error, 'code', 'model_evidence_invalid' if response is not None else 'model_preparation_failed')
         decision['_model_failure_code'] = code
+        model_http_status = getattr(error, 'model_http_status', None)
+        if type(model_http_status) is int and 100 <= model_http_status <= 599:
+            decision['_model_http_status'] = model_http_status
+        model_retry_after_seconds = getattr(error, 'model_retry_after_seconds', None)
+        if (type(model_retry_after_seconds) in (int, float) and model_retry_after_seconds > 0
+                and (type(model_retry_after_seconds) is int or math.isfinite(model_retry_after_seconds))):
+            decision['_model_retry_after_seconds'] = model_retry_after_seconds
+        if getattr(error, 'model_transport_failure', False) is True:
+            decision['_model_transport_failure'] = True
         audit_identity = getattr(error, '_model_audit', audit_identity)
         if getattr(error, '_model_audit_finalize_failed', False):
             decision['_receipt_finalize_failed'] = True
@@ -1285,7 +1307,9 @@ def review_occurrence(row, original_claims, *, model_name, source_cache, attempt
             decision = model_decision(row, original_claims, source_cache=source_cache,
                 attempt_store=attempt_store, counters=counters,
                 storage_check=lambda source_review: storage.admit(source_review, identity),
-                request_gate=request_gate, original_occurrence_resolver=original_occurrence_resolver, _timing=timing)
+                request_gate=request_gate, original_occurrence_resolver=original_occurrence_resolver, _timing=timing,
+                audit_context={'activity_id': identity['item_id'], 'item_id': identity['item_id'],
+                    'occurrence_id': identity['occurrence_id'], 'source_id': row.get('source_id')})
         except Exception as error:
             decision = _unresolved_decision({'status': 'source_unavailable' if _occurrence_source_urls(row) else 'secondary_only',
                 'reason': 'The AI review failed before a prepared verdict was saved.', 'sources': [], 'attempts': []},
@@ -1303,6 +1327,15 @@ def review_occurrence(row, original_claims, *, model_name, source_cache, attempt
         result['_reuse'] = decision['_reuse']
     if result['new_request'] and result['paid_failure'] and decision.get('_model_failure_code'):
         result['model_failure_code'] = decision['_model_failure_code']
+        model_http_status = decision.get('_model_http_status')
+        if type(model_http_status) is int and 100 <= model_http_status <= 599:
+            result['model_http_status'] = model_http_status
+        model_retry_after_seconds = decision.get('_model_retry_after_seconds')
+        if (type(model_retry_after_seconds) in (int, float) and model_retry_after_seconds > 0
+                and (type(model_retry_after_seconds) is int or math.isfinite(model_retry_after_seconds))):
+            result['model_retry_after_seconds'] = model_retry_after_seconds
+        if decision.get('_model_transport_failure') is True:
+            result['model_transport_failure'] = True
     timing.setdefault('review_preparation_seconds', time.monotonic() - review_started)
     storage_started = time.monotonic()
 

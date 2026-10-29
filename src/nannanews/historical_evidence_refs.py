@@ -30,7 +30,7 @@ CHUNK_CHARS = 4000
 OVERLAP_CHARS = 512
 MAX_CATALOG_ENTRIES = 4096
 MAX_CATALOG_TEXT_CHARS = 8_000_000
-SCHEMA_VERSION = 'historical-evidence-json-schema-v1'
+SCHEMA_VERSION = 'historical-evidence-json-schema-v2'
 
 
 def historical_response_schema(catalog, sources):
@@ -94,23 +94,32 @@ def historical_response_schema(catalog, sources):
             obj({'value': string(limit), 'evidence': array(ref('field_evidence'), 8, 1)}),
             obj({'value': {'type': 'null'}, 'evidence': array(ref('field_evidence'), 0)})]}
             for name, limit in FIELD_LIMITS.items()}
-        activity_fields['colleges'] = array(obj({'name': string(200),
-            'relation': enum(['associated', 'audience']), 'evidence': ref('field_evidence')}), 30)
+        # Select the literal evidence before generating its college name and role.
+        activity_fields['colleges'] = array(obj({'evidence': ref('field_evidence'),
+            'name': string(200), 'relation': enum(['associated', 'audience'])}), 30)
         activity_fields['image_indices'] = array(ref('image_index'), 64) if indices else array({'type': 'integer'}, 0)
         activity = {'anyOf': [obj(activity_fields), {'type': 'null'}]}
     else:
         activity = {'type': 'null'}
-    claims = array(obj({'kind': enum(['event', 'deadline', 'registration', 'application', 'listed', 'source']),
-        'quote': union(claim_quotes), 'normalized_date': {'type': ['string', 'null']},
-        'resolution': enum(['explicit', 'contextual', 'year_unknown', 'ambiguous', 'invalid']),
-        'evidence': string(4000), 'locator': {'type': 'null'}}), 1000) if claim_quotes else array({'type': 'null'}, 0)
+    if claim_quotes:
+        definitions['claim_kind'] = enum(['event', 'deadline', 'registration', 'application', 'listed', 'source'])
+        definitions['claim_quote'] = union(claim_quotes)
+        claims = array(union([obj({'kind': ref('claim_kind'), 'quote': ref('claim_quote'),
+            'resolution': enum(resolutions), 'normalized_date': {'type': day_type},
+            'evidence': string(4000), 'locator': {'type': 'null'}})
+            for day_type, resolutions in (
+                ('string', ['explicit', 'contextual']),
+                ('null', ['year_unknown', 'ambiguous', 'invalid']))]), 1000)
+    else:
+        claims = array({'type': 'null'}, 0)
     citations = array(obj({'url': ref('primary_url'), 'quotes': array(union(common_quotes), 100, 1)}), 100) if common_quotes else array({'type': 'null'}, 0)
+    # Structured outputs follow property order: emit date claims before the verdict.
     schema = obj({'evidence_scope': enum([catalog['scope']]),
-        'status': enum(['resolved', 'needs_context', 'source_missing', 'recurring_no_end',
-                        'no_relevant_date', 'invalid_source', 'uncertain', 'unresolved']),
         'reason': string(4000), 'claims': claims,
         'source_status': enum(['source_verified', 'source_conflict', 'source_unavailable', 'source_mismatch', 'secondary_only']),
-        'source_reason': string(4000), 'citations': citations, 'activity': activity})
+        'source_reason': string(4000), 'citations': citations, 'activity': activity,
+        'status': enum(['resolved', 'needs_context', 'source_missing', 'recurring_no_end',
+                        'no_relevant_date', 'invalid_source', 'uncertain', 'unresolved'])})
     if definitions:
         schema['$defs'] = definitions
     # Current documented strict protocol limits, not our catalog's larger limits.

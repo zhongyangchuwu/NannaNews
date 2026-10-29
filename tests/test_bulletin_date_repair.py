@@ -412,6 +412,65 @@ def test_model_decision_uses_full_linked_source_and_accepts_non_regex_date_quote
     assert decision['reviewer'] == 'luna:test-model'
 
 
+def test_review_occurrence_propagates_transport_metadata_without_changing_record(
+        database, tmp_path, monkeypatch):
+    from collections import Counter
+    from nannanews import acquisition
+
+    rows, originals, _ = repair.date_snapshot(database)
+    row = rows[0]
+    monkeypatch.setattr(acquisition, 'fetch_document', lambda url: _fetched_document())
+    monkeypatch.setattr(acquisition, '_model_config', lambda: SimpleNamespace(model_name='test-model'))
+
+    class AttemptStore:
+        audit_directory = tmp_path / 'audit'
+
+        def lookup(self, request_key):
+            return None
+
+        def reserve(self, request_key, request_json):
+            pass
+
+        def finish(self, request_key, *, decision, raw_output=None, error=None):
+            self.finished_decision = decision
+
+        def record_outcome(self, record, model_name):
+            pass
+
+    class Storage:
+        artifact = tmp_path / 'reviews.jsonl'
+
+        def admit(self, source_review, identity):
+            pass
+
+        def check_record(self, record):
+            pass
+
+    def fail_request(instructions, source_data, media=(), **kwargs):
+        kwargs['before_send']()
+        raise acquisition.AcquisitionError('HTTP 429', 'model_http_error', 502,
+            model_http_status=429, model_retry_after_seconds=3600, model_transport_failure=True)
+
+    monkeypatch.setattr(acquisition, 'request_model_json', fail_request)
+    attempt_store = AttemptStore()
+    result = repair.review_occurrence(row, originals[row['id']], model_name='test-model',
+        source_cache={}, attempt_store=attempt_store, storage=Storage(), counters=Counter())
+
+    assert result['new_request'] is True
+    assert result['paid_failure'] is True
+    assert result['model_failure_code'] == 'model_http_error'
+    assert result['model_http_status'] == 429
+    assert result['model_retry_after_seconds'] == 3600.0
+    assert result['model_transport_failure'] is True
+    assert attempt_store.finished_decision['_model_http_status'] == 429
+    assert attempt_store.finished_decision['_model_retry_after_seconds'] == 3600.0
+    assert attempt_store.finished_decision['_model_transport_failure'] is True
+    assert 'model_http_status' not in result['record']
+    assert 'model_retry_after_seconds' not in result['record']
+    assert '_model_http_status' not in result['record']
+    assert 'model_transport_failure' not in result['record']
+
+
 def test_image_only_date_quote_is_bound_to_captured_poster_bytes(database, monkeypatch):
     from nannanews import acquisition
     rows, originals, _ = repair.date_snapshot(database)

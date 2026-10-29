@@ -390,3 +390,35 @@ def test_plain_eof_with_invalid_declared_length_is_incomplete_before_first_archi
     assert metadata['response']['complete'] is False
     assert archived_completeness and all(value is False for value in archived_completeness)
     assert len(connection.sent) == 1
+
+
+@pytest.mark.parametrize('style', ['chat_completions', 'responses'])
+def test_json_review_cannot_invoke_provider_default_image_tools(wire, monkeypatch, style):
+    settings, connection = wire
+    settings.model_api_style = style
+    tool_invocations = []
+    expected = {'event_date': '2024-10-18'}
+
+    def provider_response():
+        payload = json.loads(connection.sent[-1][2])
+        if payload.get('tool_choice') == 'none':
+            response = envelope(expected)
+            if style == 'responses':
+                response.update(status='completed', output=[{'type': 'message',
+                    'role': 'assistant', 'status': 'completed',
+                    'content': [{'type': 'output_text', 'text': json.dumps(expected)}]}])
+        else:
+            tool_invocations.append('image_generation')
+            response = ({'status': 'completed', 'output': [
+                {'type': 'image_generation_call', 'status': 'completed', 'result': 'generated-image'}]}
+                if style == 'responses' else {'choices': [{'finish_reason': 'tool_calls',
+                    'message': {'content': None, 'tool_calls': [{'type': 'function',
+                        'function': {'name': 'generate_image', 'arguments': '{}'}}]}}]})
+        return Response(json.dumps(response).encode())
+
+    monkeypatch.setattr(connection, 'getresponse', provider_response)
+    original = acquisition._image(image_bytes(), 'https://public.example/original-poster.png')
+    result, _ = acquisition.request_model_json('Read the supplied poster; return JSON only.',
+        {'text': '活动日期为2024年10月18日。'}, [original])
+    assert result == expected
+    assert tool_invocations == []

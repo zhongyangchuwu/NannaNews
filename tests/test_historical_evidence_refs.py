@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 import pytest
+from jsonschema import Draft202012Validator
 
 
 
@@ -407,6 +408,28 @@ def test_strict_schema_binds_entire_scope_and_only_actual_reference_url_image_en
 
     closed_objects(schema)
     assert (catalog, source) == original
+
+
+@pytest.mark.parametrize('quote_kind', ['text', 'image'])
+@pytest.mark.parametrize('resolution', ['explicit', 'contextual', 'year_unknown', 'ambiguous', 'invalid'])
+@pytest.mark.parametrize('day', ['2025-11-27', None])
+def test_strict_schema_matches_canonical_date_resolution_pairs(database, quote_kind, resolution, day):
+    occurrence, source, catalog, response = case(database, images=[captured_image(7)])
+    response['claims'][0].update(normalized_date=day, resolution=resolution,
+        evidence='按同一活动的日期证据独立解释，无法确定时保留未解析状态。')
+    response['status'] = 'resolved' if day is not None else 'needs_context'
+    if quote_kind == 'image':
+        response['claims'][0]['quote'] = {'url': SOURCE_URL, 'text': SOURCE_TEXT, 'image_index': 7}
+    coherent = (resolution in {'explicit', 'contextual'}) == (day is not None)
+    validator = Draft202012Validator(refs.historical_response_schema(catalog, [source]))
+    assert validator.is_valid(response) is coherent
+    if coherent:
+        decision = admit(response, occurrence, [source])
+        assert decision['claims'][0]['resolution'] == resolution
+        assert decision['claims'][0]['normalized_date'] == day
+    else:
+        with pytest.raises(ValueError):
+            admit(response, occurrence, [source])
 
 
 def test_strict_schema_keeps_image_only_primary_path_without_text_refs(database):

@@ -1,5 +1,6 @@
 """Persisted source evidence must stay bound, and old PDF shells must not be reused."""
 import base64
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -65,10 +66,10 @@ def test_legacy_header_only_embedded_pdf_is_not_seeded_as_complete_primary(tmp_p
         'raw_response_base64': base64.b64encode(raw).decode(),
         'raw_response_digest': hashlib.sha256(raw).hexdigest(), 'capture_complete': True}
     database = tmp_path / 'main.sqlite3'
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db, db:
         db.execute('CREATE TABLE source_documents(id INTEGER,source_url TEXT,document_json TEXT)')
         db.execute('INSERT INTO source_documents VALUES(1,?,?)', (URL, json.dumps(document)))
     cache = full.SourceCache(full._directory(tmp_path / 'cache'), database)
     assert cache.get(URL) is None
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db:
         assert json.loads(db.execute('SELECT document_json FROM source_documents').fetchone()[0]) == document

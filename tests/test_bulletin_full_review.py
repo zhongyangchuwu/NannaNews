@@ -400,6 +400,30 @@ def test_sigterm_drains_inflight_receipt_before_stopping(corpus, monkeypatch):
         assert db.execute('SELECT state FROM historical_attempts').fetchone()[0] == 'completed'
 
 
+def test_capture_protocol_change_refuses_frozen_resume_before_creating_paid_state(corpus, monkeypatch):
+    prepare(corpus)
+    monkeypatch.setattr(acquisition, 'SOURCE_CAPTURE_VERSION', 'different-capture-protocol')
+    monkeypatch.setattr(acquisition, '_model_post', lambda *args, **kwargs: pytest.fail('changed capture protocol billed'))
+    with pytest.raises(ValueError, match='Frozen model, protocol, rules or instructions changed'):
+        full.run_full_review(corpus.output, corpus.settings)
+    assert not AttemptStore(corpus.settings.database_path).path.exists()
+
+
+def test_immutable_cached_capture_is_not_reparsed_after_protocol_change(corpus, tmp_path, monkeypatch):
+    cache = full.SourceCache(tmp_path / 'frozen-cache', corpus.settings.database_path, hot_bytes=1)
+    document = dict(_fetched_document(), source_capture_version='frozen-protocol')
+    cache[SOURCE_URL] = {'document': document, 'media': [], 'media_error': ''}
+    path = cache._path(SOURCE_URL)
+    before = path.read_bytes()
+    monkeypatch.setattr(acquisition, 'SOURCE_CAPTURE_VERSION', 'new-protocol')
+    monkeypatch.setattr(acquisition, 'reparse_source_document', lambda *args: pytest.fail('frozen capture reparsed'))
+    reopened = full.SourceCache(cache.directory, corpus.settings.database_path)
+    retained = reopened.get(SOURCE_URL)
+    assert retained['document']['source_capture_version'] == 'frozen-protocol'
+    assert retained['document']['raw_response_digest'] == document['raw_response_digest']
+    assert path.read_bytes() == before
+
+
 def test_durable_cache_hash_failure_eviction_and_interrupted_get(corpus, tmp_path):
     cache = full.SourceCache(tmp_path / 'cache', corpus.settings.database_path, hot_bytes=1)
     value = {'document': _fetched_document(), 'media': [], 'media_error': ''}
@@ -834,3 +858,457 @@ def test_monitor_never_mutates_worker_or_paid_authority(corpus, monkeypatch):
     assert {path: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in protected} == before
     new_files = {path.name for path in corpus.output.rglob('*') if path.is_file() and path not in before}
     assert new_files == {'.monitor.lock', 'monitor-alerts.json', 'monitor.jsonl'}
+
+
+class FakeReviewClock:
+    def __init__(self, monkeypatch):
+        self.now = datetime(2026, 10, 17, 4, tzinfo=timezone.utc)
+        monkeypatch.setattr(full, '_now', lambda: self.now)
+
+    def advance(self, seconds):
+        self.now += timedelta(seconds=seconds)
+
+    def resume_waits(self, worker, monkeypatch):
+        waits = []
+        def wait(seconds):
+            assert worker.status['pause_reason'] == 'transport_cooldown'
+            assert 0 < seconds <= 60
+            waits.append(seconds)
+            assert len(waits) <= 200, 'Worker failed to leave a bounded fake cooldown'
+            self.advance(seconds)
+            return False
+        monkeypatch.setattr(worker.stop, 'wait', wait)
+        return waits
+
+
+def transport_error(status=None, retry=None):
+    error = acquisition.AcquisitionError(
+        f'模型 API 返回 HTTP {status}；未创建草稿，不会自动重试。' if status else 'Network timeout.',
+        'model_http_error' if status else 'model_unavailable')
+    error.model_http_status = status
+    error.model_retry_after_seconds = retry
+    return error
+
+
+@pytest.mark.parametrize('status', [None, 408, 429, 503])
+def test_transient_failures_auto_resume_only_unseen_requests(corpus, monkeypatch, status):
+    prepare(corpus)
+    clock = FakeReviewClock(monkeypatch)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    waits = clock.resume_waits(worker, monkeypatch)
+    posts = []
+    def failed(payload, **kwargs):
+        posts.append(payload)
+        raise transport_error(status)
+    monkeypatch.setattr(acquisition, '_model_post', failed)
+    result = worker.run()
+    assert result['phase'] == 'completed'
+    assert len(posts) == result['counts']['model_request_attempts'] == 4
+    assert sum(waits) == 600 + 1800 + 1800
+    assert result['quality_failures'] == 0
+    assert result['transport_failures'] == 4
+    assert result['model_quality']['cumulative']['failures'] == 4
+    events = [full._load(path) for path in sorted((corpus.output / 'journal').glob('event-*.json'))]
+    intents = [event['request_sha256'] for event in events if event['event'] == 'intent']
+    assert len(intents) == len(set(intents)) == 4
+    assert all(event['model_failure_code'] in full.MODEL_TRANSPORT_FAILURE_CODES
+               for event in events if event['event'] == 'outcome')
+    with closing(sqlite3.connect(worker.attempt_store.path)) as ledger:
+        before = ledger.execute('SELECT request_sha256,state,error FROM historical_attempts ORDER BY request_sha256').fetchall()
+    assert all(row[1] == 'failed' for row in before)
+    monkeypatch.setattr(acquisition, '_model_post', lambda *args, **kwargs: pytest.fail('Failed paid key replayed'))
+    replayed = full.run_full_review(corpus.output, corpus.settings)
+    assert replayed['counts'] == result['counts']
+    assert replayed['model_quality'] == result['model_quality']
+    assert replayed['transport_failures'] == 4
+    with closing(sqlite3.connect(worker.attempt_store.path)) as ledger:
+        assert ledger.execute('SELECT request_sha256,state,error FROM historical_attempts ORDER BY request_sha256').fetchall() == before
+
+
+def test_cooldown_restart_retry_after_and_success_reset(corpus, monkeypatch):
+    prepare(corpus)
+    clock = FakeReviewClock(monkeypatch)
+    first = full.FullReviewWorker(corpus.output, corpus.settings)
+    def first_failure(*args, **kwargs):
+        raise transport_error(429, 1200)
+    monkeypatch.setattr(acquisition, '_model_post', first_failure)
+    def stop_in_cooldown(seconds):
+        assert first.status['pause_reason'] == 'transport_cooldown'
+        first.stop.set()
+        return True
+    monkeypatch.setattr(first.stop, 'wait', stop_in_cooldown)
+    stopped = first.run()
+    assert stopped['counts']['model_request_attempts'] == 1
+    assert stopped['cooldown_remaining_seconds'] == 1200
+    originals = {path: path.read_bytes() for path in (corpus.output / 'journal').glob('event-*.json')}
+    frozen_scope = (corpus.output / 'scope.json').read_bytes()
+    clock.advance(300)
+    restarted = full.FullReviewWorker(corpus.output, corpus.settings)
+    assert restarted.transport_failures == 1
+    assert restarted.status['cooldown_remaining_seconds'] == 900
+    assert all(path.read_bytes() == value for path, value in originals.items())
+    waits = clock.resume_waits(restarted, monkeypatch)
+    calls = []
+    def post(payload, **kwargs):
+        calls.append(clock.now)
+        if len(calls) == 1:
+            raise transport_error(503, 2400)
+        if len(calls) == 2:
+            return uncertain_response(payload)
+        raise transport_error(429)
+    monkeypatch.setattr(acquisition, '_model_post', post)
+    result = restarted.run()
+    assert sum(waits) == 900 + 2400
+    assert (calls[1] - calls[0]).total_seconds() == 2400
+    assert result['transport_failures'] == 1
+    assert result['cooldown_remaining_seconds'] == 600
+    assert result['quality_failures'] == 0
+    assert result['counts']['model_request_attempts'] == 4
+    assert (corpus.output / 'scope.json').read_bytes() == frozen_scope
+    assert all(path.read_bytes() == value for path, value in originals.items())
+    durable = full.FullReviewWorker(corpus.output, corpus.settings)
+    assert durable.cooldown_until == result['cooldown_until']
+    assert durable.transport_failures == 1
+
+
+def test_legacy_malformed_then_two_429_reconstructs_without_old_circuit(corpus, monkeypatch):
+    prepare(corpus)
+    clock = FakeReviewClock(monkeypatch)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    calls = []
+    def post(payload, **kwargs):
+        calls.append(payload)
+        if len(calls) == 1:
+            return response({'invalid': 'protocol output'})
+        raise transport_error(429)
+    monkeypatch.setattr(acquisition, '_model_post', post)
+    def wait(seconds):
+        if len(calls) == 3:
+            worker.stop.set()
+            return True
+        clock.advance(seconds)
+        return False
+    monkeypatch.setattr(worker.stop, 'wait', wait)
+    worker.run()
+    assert worker.quality_failures == 1
+    # Reproduce the old on-disk journal shape and obsolete aggregate counter.
+    outcome_number = 0
+    for path in sorted((corpus.output / 'journal').glob('event-*.json')):
+        event = full._load(path)
+        if event['event'] == 'outcome':
+            for field in ('model_failure_code', 'model_http_status', 'model_retry_after_seconds',
+                          'transport_failures', 'cooldown_until'):
+                event.pop(field, None)
+            outcome_number += 1
+            event['quality_failures'] = outcome_number
+            full._atomic(path, event)
+    legacy_status = full._load(corpus.output / 'status.json')
+    legacy_status.update(phase='stopped', pause_reason='quality_circuit', quality_failures=3,
+                         consecutive_quality_failures=3)
+    full._atomic(corpus.output / 'status.json', legacy_status)
+    originals = {path: path.read_bytes() for path in (corpus.output / 'journal').glob('event-*.json')}
+    clock.advance(9 * 3600)
+    monkeypatch.setattr(AttemptStore, 'lookup', lambda *args: pytest.fail('Replay loaded full paid payload'))
+    resumed = full.FullReviewWorker(corpus.output, corpus.settings)
+    assert resumed.quality_failures == 1
+    assert resumed.transport_failures == 2
+    assert resumed.pause_reason() is None
+    assert resumed.status['cooldown_remaining_seconds'] == 0
+    assert resumed.status['counts']['model_request_attempts'] == 3
+    assert resumed._model_quality_summary()['cumulative']['failures'] == 3
+    assert resumed._model_quality_summary()['cumulative']['new_paid_outcomes'] == 3
+    assert all(path.read_bytes() == value for path, value in originals.items())
+
+
+def test_transport_preserves_manual_quality_streak_and_free_results_prove_nothing(corpus):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    malformed = {'new_request': True, 'paid_failure': True, 'model_failure_code': 'model_evidence_invalid'}
+    transient = {'new_request': True, 'paid_failure': True, 'model_failure_code': 'model_http_error',
+                 'model_http_status': 429}
+    worker._quality(malformed, 'model_terminal_failed')
+    worker._quality(transient, 'model_terminal_failed')
+    until = worker.cooldown_until
+    worker._quality({'new_request': False, 'terminal': True}, 'model_terminal_unconfirmed')
+    assert worker.quality_failures == worker.transport_failures == 1
+    assert worker.cooldown_until == until
+    worker._quality(malformed, 'model_terminal_failed')
+    worker._quality(transient, 'model_terminal_failed')
+    worker._quality(malformed, 'model_terminal_failed')
+    assert worker.quality_failures == 3
+    assert worker.transport_failures == 2
+    assert worker.pause_reason() == 'quality_circuit'
+    worker._quality({'new_request': True, 'terminal': True}, 'model_terminal_unconfirmed')
+    assert worker.quality_failures == worker.transport_failures == 0
+    assert worker.cooldown_until is None
+
+
+@pytest.mark.parametrize('code,status', [('model_http_error', 401), ('model_http_error', 403),
+                                      ('model_http_error', None), ('unknown_failure', None)])
+def test_permanent_or_unknown_failures_remain_manual(corpus, code, status):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    for _ in range(3):
+        worker._quality({'new_request': True, 'paid_failure': True, 'model_failure_code': code,
+                         'model_http_status': status}, 'model_terminal_failed')
+    assert worker.pause_reason() == 'quality_circuit'
+    assert worker.transport_failures == 0
+    assert worker.cooldown_until is None
+
+
+def test_cooldown_preserves_stop_pause_daily_disk_scope_config_and_budget_gates(corpus, monkeypatch):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    worker._quality({'new_request': True, 'paid_failure': True, 'model_failure_code': 'model_unavailable'},
+                    'model_terminal_failed')
+    assert worker.pause_reason() == 'transport_cooldown'
+    worker.stop.set()
+    assert worker.pause_reason() == 'stop_requested'
+    worker.stop.clear()
+    pause = corpus.output / 'pause-request'
+    pause.write_text('operator pause')
+    assert worker.pause_reason() == 'operator_pause'
+    pause.unlink()
+    with monkeypatch.context() as patch:
+        patch.setattr(full, 'daily_pause_reason', lambda settings: 'daily_priority')
+        assert worker.pause_reason() == 'daily_priority'
+    with monkeypatch.context() as patch:
+        patch.setattr(full.shutil, 'disk_usage', lambda path: SimpleNamespace(free=0))
+        assert worker.pause_reason() == 'disk_low'
+    with monkeypatch.context() as patch:
+        patch.setattr(full, '_configuration', lambda settings: {})
+        assert worker.pause_reason() == 'configuration_changed'
+    with monkeypatch.context() as patch:
+        patch.setattr(full, '_signature', lambda db: {})
+        assert worker.pause_reason() == 'scope_changed'
+    worker.counters['model_request_attempts'] = worker.scope['max_new_requests']
+    with pytest.raises(repair.ReviewDeferred) as blocked:
+        worker.request_gate('must-not-reserve', source_review())
+    assert blocked.value.code == 'request_budget'
+    assert worker._attempt_metadata('must-not-reserve') is None
+
+
+def test_monitor_healthy_cooldown_expires_without_masking_health_faults(monitor_run):
+    run = monitor_run
+    run.status.update(pause_reason='transport_cooldown', transport_failures=4,
+        cooldown_until=(run.now + timedelta(minutes=30)).isoformat(),
+        last_progress_at=(run.now - timedelta(hours=1)).isoformat())
+    run.status['model_quality']['rolling'].update(sample_size=10, failures=5, transport_failure=5)
+    full._atomic(run.output / 'status.json', run.status)
+    observation = full.monitor_observation(run.output, run.now)
+    assert observation['pause_intentional'] is True
+    assert observation['severity'] == 'ok'
+    assert observation['warnings'] == []
+    assert observation['transport_failures'] == 4
+    assert observation['cooldown_remaining_seconds'] == 1800
+    assert observation['model_quality']['rolling']['failures'] == 5
+    run.status['heartbeat_at'] = (run.now - timedelta(minutes=4)).isoformat()
+    full._atomic(run.output / 'status.json', run.status)
+    assert full.monitor_observation(run.output, run.now)['warnings'] == ['heartbeat_stale']
+    run.status['heartbeat_at'] = (run.now + timedelta(minutes=31)).isoformat()
+    full._atomic(run.output / 'status.json', run.status)
+    expired = full.monitor_observation(run.output, run.now + timedelta(minutes=31))
+    assert expired['pause_intentional'] is False
+    assert expired['cooldown_remaining_seconds'] == 0
+    assert set(expired['warnings']) == {'progress_stale', 'model_quality_degraded'}
+
+
+@pytest.mark.parametrize('flag', [True, False, None])
+def test_partial_transport_flag_is_durable_without_reclassifying_malformed(corpus, monkeypatch, flag):
+    prepare(corpus)
+    FakeReviewClock(monkeypatch)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    def failed(payload, **kwargs):
+        worker.stop.set()
+        error = acquisition.AcquisitionError(
+            '模型 API 响应不完整，未创建草稿。' if flag is True else 'Malformed JSON or oversized response.',
+            'model_response_invalid')
+        error.model_transport_failure = flag
+        raise error
+    monkeypatch.setattr(acquisition, '_model_post', failed)
+    result = worker.run()
+    assert result['counts']['model_request_attempts'] == 1
+    expected_kind = 'transport_failure' if flag is True else 'malformed_model_failure'
+    assert result['model_quality']['cumulative'][expected_kind] == 1
+    assert result['model_quality']['cumulative']['failures'] == 1
+    assert result['quality_failures'] == (0 if flag is True else 1)
+    assert result['transport_failures'] == (1 if flag is True else 0)
+    outcome_path = next(path for path in (corpus.output / 'journal').glob('event-*.json')
+                        if full._load(path)['event'] == 'outcome')
+    outcome = full._load(outcome_path)
+    assert outcome['model_failure_code'] == 'model_response_invalid'
+    assert outcome.get('model_transport_failure') is (True if flag is True else None)
+    monkeypatch.setattr(acquisition, '_model_post', lambda *args, **kwargs: pytest.fail('Partial paid response replayed'))
+    resumed = full.FullReviewWorker(corpus.output, corpus.settings)
+    assert resumed.quality_failures == result['quality_failures']
+    assert resumed.transport_failures == result['transport_failures']
+    assert resumed.cooldown_until == result['cooldown_until']
+    assert resumed.pause_reason() == ('transport_cooldown' if flag is True else None)
+    with closing(sqlite3.connect(worker.attempt_store.path)) as ledger:
+        assert ledger.execute('SELECT state FROM historical_attempts').fetchall() == [('failed',)]
+    if flag is True:
+        # Legacy partial bodies were counted as malformed. Reconstruct downtime
+        # from the exact safe ledger message without rewriting historical metrics.
+        outcome.pop('model_transport_failure')
+        outcome['model_quality_kind'] = 'malformed_model_failure'
+        full._atomic(outcome_path, outcome)
+        original = outcome_path.read_bytes()
+        legacy = full.FullReviewWorker(corpus.output, corpus.settings)
+        assert legacy.quality_failures == 0
+        assert legacy.transport_failures == 1
+        assert legacy.pause_reason() == 'transport_cooldown'
+        assert legacy._model_quality_summary()['cumulative']['malformed_model_failure'] == 1
+        assert legacy._model_quality_summary()['cumulative']['transport_failure'] == 0
+        assert outcome_path.read_bytes() == original
+
+
+@pytest.mark.parametrize('status', [401, 403])
+@pytest.mark.parametrize('code', ['model_unavailable', 'model_response_invalid'])
+def test_permanent_http_precedes_transport_flags(corpus, status, code):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    for _ in range(3):
+        worker._quality({'new_request': True, 'paid_failure': True, 'model_failure_code': code,
+                         'model_http_status': status, 'model_transport_failure': True},
+                        'model_terminal_failed')
+    assert worker.quality_failures == 3
+    assert worker.transport_failures == 0
+    assert worker.cooldown_until is None
+    assert worker.pause_reason() == 'quality_circuit'
+
+
+@pytest.mark.parametrize('code', ['model_audit_failed', 'model_preparation_failed', 'model_evidence_invalid'])
+def test_nontransport_failure_precedes_preserved_http_facts(corpus, code):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    for _ in range(3):
+        worker._quality({'new_request': True, 'paid_failure': True, 'model_failure_code': code,
+                         'model_http_status': 503, 'model_transport_failure': True,
+                         'model_retry_after_seconds': 3600}, 'model_terminal_failed')
+    assert worker.quality_failures == 3
+    assert worker.transport_failures == 0
+    assert worker.cooldown_until is None
+    assert worker.pause_reason() == 'quality_circuit'
+    assert worker.model_quality_totals['transport_failure'] == 0
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_finalized_attempt_before_outcome_replays_scalar_retry_after_without_rebilling(corpus, monkeypatch, partial):
+    from nannanews import bulletin_historical_attempts as attempts
+
+    prepare(corpus)
+    clock = FakeReviewClock(monkeypatch)
+    monkeypatch.setattr(attempts, 'datetime', SimpleNamespace(now=lambda zone: clock.now))
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    posts = []
+    def post(payload, **kwargs):
+        posts.append(payload)
+        error = transport_error(200 if partial else 429, 3600)
+        if partial:
+            error.code = 'model_response_invalid'
+            error.model_transport_failure = True
+        raise error
+    monkeypatch.setattr(acquisition, '_model_post', post)
+    finish = AttemptStore.finish
+    def finish_then_crash(store, key, **kwargs):
+        finish(store, key, **kwargs)
+        raise KeyboardInterrupt('simulated crash after durable paid finalization')
+    with monkeypatch.context() as patch:
+        patch.setattr(AttemptStore, 'finish', finish_then_crash)
+        with pytest.raises(KeyboardInterrupt, match='durable paid finalization'):
+            worker.run()
+    assert len(posts) == 1
+    originals = {path: path.read_bytes() for path in (corpus.output / 'journal').glob('event-*.json')}
+    assert all(full._load(path)['event'] != 'outcome' for path in originals)
+    with closing(sqlite3.connect(worker.attempt_store.path)) as ledger:
+        protected = ledger.execute('SELECT * FROM historical_attempts').fetchone()
+    key = protected[0]
+    clock.advance(700)
+    resumed = full.FullReviewWorker(corpus.output, corpus.settings)
+    assert resumed.quality_failures == 0
+    assert resumed.transport_failures == 1
+    assert resumed.status['cooldown_remaining_seconds'] == 2900
+    metadata = resumed._attempt_failure_facts(key)
+    assert metadata['model_retry_after_seconds'] == 3600
+    assert metadata['model_http_status'] == (200 if partial else 429)
+    assert metadata['model_transport_failure'] is partial
+    assert not {'decision_json', 'raw_output_json', 'request_json'}.intersection(metadata)
+    waits = clock.resume_waits(resumed, monkeypatch)
+    def success(payload, **kwargs):
+        assert payload != posts[0], 'Previously failed logical request was sent again'
+        posts.append(payload)
+        return uncertain_response(payload)
+    monkeypatch.setattr(acquisition, '_model_post', success)
+    result = resumed.run()
+    assert sum(waits) == 2900
+    assert len(posts) == result['counts']['model_request_attempts'] == 4
+    assert result['counts']['request_blocked'] == 1
+    with closing(sqlite3.connect(worker.attempt_store.path)) as ledger:
+        assert ledger.execute('SELECT * FROM historical_attempts WHERE request_sha256=?', (key,)).fetchone() == protected
+    assert all(path.read_bytes() == value for path, value in originals.items())
+
+
+@pytest.mark.parametrize('decision', [
+    {'_model_failure_code': 'model_http_error', '_model_http_status': '429',
+     '_model_retry_after_seconds': '3600', '_model_transport_failure': 'true'},
+    {'_model_failure_code': ['model_unavailable'], '_model_http_status': True,
+     '_model_retry_after_seconds': -1, '_model_transport_failure': 1},
+    None,
+])
+def test_replay_scalar_extraction_rejects_untyped_metadata(corpus, decision):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    key = 'a' * 64
+    worker.attempt_store.reserve(key, '{}')
+    worker.attempt_store.finish(key, decision=decision, error='Unknown retained failure.')
+    metadata = worker._attempt_failure_facts(key)
+    assert metadata['model_http_status'] is None
+    assert metadata['model_retry_after_seconds'] is None
+    assert metadata['model_transport_failure'] is False
+    assert not {'decision_json', 'raw_output_json', 'request_json'}.intersection(metadata)
+
+
+def test_replay_scalar_extraction_guards_invalid_legacy_json(corpus):
+    prepare(corpus)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    key = 'b' * 64
+    worker.attempt_store.reserve(key, '{}')
+    worker.attempt_store.finish(key, decision={}, error='Unknown retained failure.')
+    with closing(sqlite3.connect(worker.attempt_store.path)) as ledger, ledger:
+        ledger.execute('UPDATE historical_attempts SET decision_json=? WHERE request_sha256=?', ('{broken', key))
+    metadata = worker._attempt_failure_facts(key)
+    assert metadata['state'] == 'failed'
+    assert metadata['model_failure_code'] is None
+    assert metadata['model_http_status'] is None
+    assert metadata['model_retry_after_seconds'] is None
+    assert metadata['model_transport_failure'] is False
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_complete_outcome_replay_never_reads_decision_json(corpus, monkeypatch, failed):
+    from contextlib import contextmanager
+
+    prepare(corpus)
+    FakeReviewClock(monkeypatch)
+    worker = full.FullReviewWorker(corpus.output, corpus.settings)
+    def post(payload, **kwargs):
+        worker.stop.set()
+        if failed:
+            raise transport_error(429, 3600)
+        return uncertain_response(payload)
+    monkeypatch.setattr(acquisition, '_model_post', post)
+    worker.run()
+    queries = []
+    readonly = full._readonly
+    @contextmanager
+    def traced(path):
+        with readonly(path) as db:
+            db.set_trace_callback(queries.append)
+            yield db
+    monkeypatch.setattr(full, '_readonly', traced)
+    replayed = full.FullReviewWorker(corpus.output, corpus.settings)
+    assert replayed.counters['model_request_attempts'] == 1
+    assert replayed.transport_failures == (1 if failed else 0)
+    assert not any('decision_json' in query for query in queries)
+    key = next(iter(replayed.intents))
+    assert set(replayed._attempt_metadata(key)) == {'state', 'finished_at', 'error'}
