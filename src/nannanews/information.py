@@ -201,7 +201,7 @@ def _persist_source(conn, source):
     source_id = source['id'].strip()
     url = acquisition.canonical_url(source['url'])
     kind, status = source.get('kind', 'html'), source.get('status', 'pending_validation')
-    if kind not in ('html', 'nju_job') or status not in SOURCE_STATUSES:
+    if kind not in ('html', 'nju_job', 'nju_math_reports', 'wechat_gui', 'wechat_official_links') or status not in SOURCE_STATUSES:
         raise ValueError('来源类型或状态不受支持。')
     enabled = source.get('enabled', False)
     if type(enabled) is not bool:
@@ -317,11 +317,15 @@ def save_document(document, source_id, actor):
         conn.execute('BEGIN IMMEDIATE')
         publisher = None
         if source_id is not None:
-            source = conn.execute('SELECT status,publisher_college FROM information_sources WHERE id=?', (source_id,)).fetchone()
+            source = conn.execute('SELECT status,publisher_college,kind FROM information_sources WHERE id=?', (source_id,)).fetchone()
             if source is None:
                 raise ValueError('来源尚未注册。')
             if source[0] == 'verified':
                 publisher = source[1]
+            if source[2] in ('wechat_gui', 'wechat_official_links'):
+                from nannanews import wechat_public
+
+                captured['source_published_date'] = wechat_public.published_date(captured)
         row = conn.execute('SELECT id,model_status FROM source_documents WHERE source_url=? AND digest=?',
                            (captured['canonical_url'],captured['digest'])).fetchone()
         if row:

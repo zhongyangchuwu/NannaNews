@@ -571,6 +571,9 @@ def main(argv=None):
     sub = commands.add_parser('bulletin-issues', help='Read issue identities and retained document evidence')
     sub.add_argument('--date-from', default='')
     sub.add_argument('--date-to', default='')
+    sub = commands.add_parser('source-coverage', help='Read bounded original-article coverage against retained bulletin source links; not activity recall')
+    sub.add_argument('--issue-from', type=int, help='Inclusive numeric issue number; no bounds defaults to latest issue')
+    sub.add_argument('--issue-to', type=int, help='Inclusive numeric issue number')
     sub = commands.add_parser('export-static', help='Export only public bulletin fields and resources; no private editorial data or backend API')
     sub.add_argument('output', help='Static reader data directory')
     sub.add_argument('--replace', action='store_true', help='Replace only a previous marked static export')
@@ -708,6 +711,13 @@ def main(argv=None):
             from nannanews import bulletin_store
             print(json.dumps(bulletin_store.list_issues({'issue_date_from': args.date_from,
                                                         'issue_date_to': args.date_to}), ensure_ascii=False, indent=2))
+        elif args.command == 'source-coverage':
+            from nannanews import source_coverage
+            with closing(schema.open_database(readonly=True)) as connection:
+                connection.execute('BEGIN')
+                result = source_coverage.source_coverage(connection,
+                    issue_from=args.issue_from, issue_to=args.issue_to)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == 'export-static':
             from nannanews import static_export
             print(json.dumps(static_export.export_static(args.output, replace=args.replace),

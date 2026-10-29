@@ -165,3 +165,36 @@ def test_symlink_asset_is_not_acquired(tmp_path):
     parsed = parse_html(save(tmp_path, '<html><body><h1>南哪消息 2026-10-13</h1><h2>海报</h2><p><img src="poster.png">原文</p></body></html>'))
     assert parsed['assets'] == []
     assert any(w['code'] == 'image_missing' for w in parsed['warnings'])
+
+
+@pytest.mark.parametrize('section', [
+    '<h2>接种通知</h2><p>详情：https://hospital.nju.edu.cn//ggtz/20241114/i301674.html。</p>',
+    '<h2>https://hospital.nju.edu.cn//ggtz/20241114/i301674.html</h2><p>接种安排见标题网址。</p>',
+    '<h2><a href="https://hospital.nju.edu.cn//ggtz/20241114/i301674.html">接种通知</a></h2><p>接种安排。</p>',
+])
+def test_detail_retains_literal_source_urls_in_body_and_heading(tmp_path, section):
+    parsed = parse_html(save(tmp_path, '<html><body><h1>南哪消息 2026-10-13</h1>' + section + '</body></html>'))
+    detail = next(item for item in parsed['items'] if item['kind'] == 'detail')
+    assert detail['source_urls'] == ['https://hospital.nju.edu.cn//ggtz/20241114/i301674.html']
+
+
+def test_literal_table_url_keeps_query_and_balanced_path_punctuation(tmp_path):
+    html = '''<html><body><h1>南哪消息 2026-10-13</h1><h2>活动列表</h2>
+    <table><tr><th>活动标题</th><th>说明</th></tr><tr><td>技术分享</td>
+    <td>报名（https://example.edu.cn/archive/(2026)/call?q=1&amp;tag=2）。</td></tr></table></body></html>'''
+    parsed = parse_html(save(tmp_path, html))
+    summary = next(item for item in parsed['items'] if item['kind'] == 'summary')
+    assert summary['source_urls'] == ['https://example.edu.cn/archive/(2026)/call?q=1&tag=2']
+
+
+def test_literal_links_do_not_use_script_text_anchor_labels_or_adjacent_activity(tmp_path):
+    html = '''<html><body><h1>南哪消息 2026-10-13</h1><h2>活动甲</h2>
+    <p>原文：<a href="https://example.edu.cn/actual">https://display.invalid/short...</a>
+    <script>const link = "https://script.invalid/helper";</script>
+    <style>.notice { background: url(https://style.invalid/helper); }</style>
+    同一原文 https://example.edu.cn/actual。</p>
+    <h2>活动乙</h2><p>原文 https://example.edu.cn/other。</p></body></html>'''
+    parsed = parse_html(save(tmp_path, html))
+    details = {item['title']: item for item in parsed['items'] if item['kind'] == 'detail'}
+    assert details['活动甲']['source_urls'] == ['https://example.edu.cn/actual']
+    assert details['活动乙']['source_urls'] == ['https://example.edu.cn/other']

@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import struct
 
@@ -100,7 +101,7 @@ def test_large_source_bytes_and_exif_orientation_survive_full_frame_normalizatio
     assert base64.b64decode(oriented['data']) == image_bytes('JPEG', size=(80, 40), exif=exif)
 
 
-@pytest.mark.parametrize('fmt', ['GIF', 'TIFF', 'PNG', 'WEBP'])
+@pytest.mark.parametrize('fmt', ['GIF', 'TIFF', 'PNG', 'WEBP', 'MPO'])
 def test_every_animation_frame_or_tiff_page_appears_in_one_contact_sheet(fmt):
     frames = [Image.new('RGB', (60, 60), color) for color in ('red', 'lime', 'blue')]
     try:
@@ -151,6 +152,94 @@ def test_invalid_and_bomb_images_fail_before_any_model_post(tmp_path):
                 acquisition.request_model_json('Instructions', {}, [original])
             post.assert_not_called()
         assert base64.b64decode(original['data']) == raw
+
+
+def test_source_over_400m_pixels_is_retained_without_decode_or_send():
+    raw = bytearray(image_bytes('JPEG'))
+    sof = raw.index(b'\xff\xc0')
+    raw[sof + 5:sof + 9] = struct.pack('>HH', 20000, 20001)
+    raw = bytes(raw)
+    original = acquisition._image(raw, 'https://example.org/poster.jpg')
+    document = {'canonical_url': 'https://example.org/article', 'text': 'Public poster',
+                'capture_complete': True, 'media': [original]}
+    before = deepcopy(document)
+    with patch.object(Image.Image, 'load', side_effect=AssertionError('oversized source must not decode')), \
+            patch.object(acquisition, '_model_post') as post:
+        with pytest.raises(acquisition.AcquisitionError) as caught:
+            acquisition.preflight_document_media(document)
+    assert caught.value.code == 'invalid_image'
+    assert document == before
+    assert base64.b64decode(document['media'][0]['data']) == raw
+    post.assert_not_called()
+
+
+@pytest.mark.parametrize('fmt,mode', [('JPEG', 'RGB'), ('JPEG', 'CMYK'), ('PNG', 'RGBA')])
+def test_large_single_frame_has_bounded_orientation_copy_and_unchanged_raw(fmt, mode):
+    exif = Image.Exif()
+    exif[274] = 6
+    with Image.new(mode, (2048, 1536), (0, 255, 255, 0) if mode == 'CMYK' else 'red') as image:
+        output = io.BytesIO()
+        image.save(output, format=fmt, exif=exif)
+    raw = output.getvalue()
+    original = acquisition._image(raw)
+    before = deepcopy(original)
+    transpose = acquisition.ImageOps.exif_transpose
+    def bounded_transpose(image):
+        assert image.width * image.height <= 256 * 1024
+        return transpose(image)
+    with patch.object(acquisition.ImageOps, 'exif_transpose', side_effect=bounded_transpose):
+        with acquisition._raster_preview(raw, 0, 256)[0] as preview:
+            assert preview.height > preview.width
+            assert math.ceil(preview.width / 32) * math.ceil(preview.height / 32) <= 256
+            red, green, blue = preview.getpixel((preview.width // 2, preview.height // 2))
+            assert red > 200 and green < 40 and blue < 40
+    assert original == before
+    assert base64.b64decode(original['data']) == raw
+
+
+def test_reduced_jpeg_still_rejects_truncated_stream():
+    raw = image_bytes('JPEG', size=(2048, 1536))[:-100]
+    original = acquisition._image(raw)
+    before = deepcopy(original)
+    with pytest.raises(OSError):
+        acquisition._raster_preview(raw, 0, 256)
+    assert original == before
+
+
+def test_truncated_second_mpo_frame_is_not_omitted():
+    frames = [Image.new('RGB', (80, 60), color) for color in ('red', 'blue')]
+    try:
+        output = io.BytesIO()
+        frames[0].save(output, format='MPO', save_all=True, append_images=frames[1:])
+        raw = output.getvalue()[:-100]
+        with Image.open(io.BytesIO(raw)) as first:
+            first.load()
+        original = acquisition._image(raw)
+        before = deepcopy(original)
+        with pytest.raises(acquisition.AcquisitionError) as caught:
+            acquisition._model_images([original])
+        assert caught.value.code == 'invalid_image'
+        assert original == before
+    finally:
+        for frame in frames:
+            frame.close()
+
+
+def test_all_tiff_pages_count_toward_image_pixel_budget(monkeypatch):
+    frames = [Image.new('RGB', (40, 40), color) for color in ('red', 'blue')]
+    try:
+        output = io.BytesIO()
+        frames[0].save(output, format='TIFF', save_all=True, append_images=frames[1:])
+        original = acquisition._image(output.getvalue())
+        before = deepcopy(original)
+        monkeypatch.setattr(acquisition, 'MAX_IMAGE_FRAME_PIXELS', 3199)
+        with pytest.raises(acquisition.AcquisitionError) as caught:
+            acquisition._model_images([original])
+        assert caught.value.code == 'invalid_image'
+        assert original == before
+    finally:
+        for frame in frames:
+            frame.close()
 
 
 def test_missing_middle_image_keeps_available_raw_and_blocks_text_only_success(tmp_path):

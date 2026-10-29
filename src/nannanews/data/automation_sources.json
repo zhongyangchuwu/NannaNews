@@ -87,7 +87,7 @@
     "expected_identity": "南京大学就业门户",
     "identity_url": "https://job.nju.edu.cn/",
     "detail_path": "/career/info/",
-    "evidence": "Anonymous GET independently returned content records with numeric id, status PUBLISHED, loginRequired false, publishedAt and page metadata. Public portal-16seXU4F.js/information-list-CKHetFkn.js declare this endpoint and zero-based page/size. Independently read 2026-10-14. Preflight 2026-10-15T10:39:50.381408+00:00: Listing readable, but sampled public articles could not be completely captured.. No complete capture is claimed.",
+    "evidence": "Anonymous public listing GET remains available. Rechecked 2026-10-19 against official portal-mJQfWL1w.js and detail-COoPrPN-.js: the existing /api/career/content/informations/{id} mapping is correct; the frontend redirects information-detail HTTP 401 to student login. NEWS detail j_recruit_news_1340 returned an anonymous JSON article, whereas 631177954285588481 returned HTTP 401. Listing loginRequired=false does not override detail access control; blocked details are not replaced with listing content or a homepage shell.",
     "discovery_scope": "paginated_listing",
     "directory_ids": [
       "0124ee0db3aeddc6"
@@ -489,6 +489,22 @@
       "10f3194456681a6a"
     ],
     "evidence": "Official public website alternative, not WeChat history. Real collector verified publisher/listing and captured a complete original http://math.nju.edu.cn/sy/xshy/20260921/i418750.html at 2026-10-15T10:39:51.178922+00:00. Scope: static_current_page. Other originals may remain limited by public access or completeness."
+  },
+  {
+    "id": "math-recent-reports",
+    "name": "数学学院近期报告",
+    "url": "https://math.nju.edu.cn/njdx/front/sxxx/reports.do?channelId=16410&pageSize=10&currentPage=1",
+    "kind": "nju_math_reports",
+    "enabled": true,
+    "publisher_college": "数学学院",
+    "identity_url": "https://math.nju.edu.cn/",
+    "expected_identity": "数学学院",
+    "article_pattern": "^/xsbg/jrbg/[0-9]{8}/i[0-9]+\\.html$",
+    "discovery_scope": "paginated_listing",
+    "directory_ids": [
+      "10f3194456681a6a"
+    ],
+    "evidence": "Public GET 2026-10-19 verified the math publisher homepage and /xsbg/jrbg/index.html, whose official script requests reports.do with channelId=16410, pageSize=10 and one-based currentPage. Anonymous GET pages 1 and 2 returned reports, pages, pageSize, currentPage and channelId despite Content-Type text/html. Each report supplies its original url, title and releasetime (publication); field_8925 is event time, not publication. The list is ordered by event time, so publication dates cannot justify early stopping; sequential pagination remains bounded by the current page budget. Page 1 included http://math.nju.edu.cn/xsbg/jrbg/20261012/i423009.html, whose public article was readable. This independent report channel supplements, not replaces, academic meetings. Packaged configuration only; no private operator activation or collection is claimed."
   },
   {
     "id": "medicine-news",
@@ -1062,6 +1078,656 @@
     "directory_ids": [
       "4f1dc9beb259078f",
       "c4a846d26e5eefac"
+    ]
+  },
+  {
+    "id": "nju-wechat-public",
+    "name": "南京大学微信公众号公开时间线",
+    "url": "https://mp.weixin.qq.com/s/JYOSSrpWqL5fPZDJBNyFYQ",
+    "kind": "wechat_gui",
+    "enabled": false,
+    "expected_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/JYOSSrpWqL5fPZDJBNyFYQ",
+    "wechat_biz": "MzAxODAzMjQ1NQ==",
+    "evidence": "Verified 南京大学 account through isolated public-account search/profile in WeChat 4.1.13.26; the reference article is independently linked from the official NJU homepage and has the same public biz identity. This URL is an identity reference article, not an account feed. Disabled pending operator deployment verification."
+  },
+  {
+    "id": "nju-youth-wechat-public",
+    "name": "南大青年微信公众号公开时间线",
+    "url": "https://mp.weixin.qq.com/s/J3dYN-j1d0TxhuZENWp4NA",
+    "kind": "wechat_gui",
+    "enabled": false,
+    "expected_identity": "南大青年",
+    "identity_url": "https://mp.weixin.qq.com/s/J3dYN-j1d0TxhuZENWp4NA",
+    "wechat_biz": "MzA3NzExMDEyMQ==",
+    "directory_ids": [
+      "98de5946ddd2a84b"
+    ],
+    "evidence": "The official Youth League website https://tuanwei.nju.edu.cn/ links this reference article; anonymous HTTP verified publisher 南大青年 and its public biz. Isolated WeChat 4.1.13.26 public-account discovery obtained https://mp.weixin.qq.com/s/U414bLu18lTB1aS51-oXcQ, whose matching publisher and complete text plus 15 declared images were verified through HTTP. GUI discovery remained bounded/partial and profile readiness can fail. Disabled pending operator deployment verification; this is an identity reference, not an account feed."
+  },
+  {
+    "id": "nju-im-wechat-public",
+    "name": "南京大学信息管理学院微信公众号公开时间线",
+    "url": "https://mp.weixin.qq.com/s/mzYewJcUQVnvQMJaVLAzbA",
+    "kind": "wechat_gui",
+    "enabled": false,
+    "expected_identity": "南京大学信息管理学院",
+    "identity_url": "https://mp.weixin.qq.com/s/mzYewJcUQVnvQMJaVLAzbA",
+    "wechat_biz": "MzkyOTcwNDM4MA==",
+    "directory_ids": ["679dc1212df4e1e6"],
+    "evidence": "Anonymous HTTP on 2026-10-20 verified this retained reference nickname and BIZ. The current official homepage https://im.nju.edu.cn/ directly links independently verified articles with the same 南京大学信息管理学院 BIZ, establishing official affiliation. GUI discovery remains unverified and disabled; the separately verified official-links adapter does not imply GUI readiness."
+  },
+  {
+    "id": "nju-atmosphere-wechat-public",
+    "name": "南京大学大气科学学院微信公众号公开时间线",
+    "url": "https://mp.weixin.qq.com/s/EnovLQhOSKprUjQ1Hlklmg",
+    "kind": "wechat_gui",
+    "enabled": false,
+    "expected_identity": "南京大学大气科学学院",
+    "identity_url": "https://mp.weixin.qq.com/s/EnovLQhOSKprUjQ1Hlklmg",
+    "wechat_biz": "MzAwNjE1OTUzNQ==",
+    "directory_ids": ["1c00fbd5062370f5"],
+    "evidence": "Anonymous HTTP on 2026-10-20 verified the exact public nickname and BIZ. The catalog official-page reference https://as.nju.edu.cn/f4/5d/c11320a324701/page.htm currently has no direct WeChat article link. Official account affiliation and GUI discovery remain unverified; disabled."
+  },
+  {
+    "id": "nju-jobs-wechat-public",
+    "name": "南大就业微信公众号公开时间线",
+    "url": "https://mp.weixin.qq.com/s/FQKrNArxqtbwhRCWYREfFQ",
+    "kind": "wechat_gui",
+    "enabled": false,
+    "expected_identity": "南大就业",
+    "identity_url": "https://mp.weixin.qq.com/s/FQKrNArxqtbwhRCWYREfFQ",
+    "wechat_biz": "MzAxMDA3MjIwMw==",
+    "directory_ids": ["0124ee0db3aeddc6"],
+    "evidence": "Anonymous HTTP on 2026-10-20 verified the exact public nickname and BIZ. The catalog associates this directory with https://job.nju.edu.cn/, whose current homepage has no direct WeChat article link. Official account affiliation and GUI discovery remain unverified; disabled."
+  },
+  {
+    "id": "nju-medicine-wechat-official",
+    "name": "南京大学医学院微信公众号官网公开链接",
+    "url": "https://med.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南京大学医学院",
+    "listing_identity": "南京大学医学院",
+    "identity_url": "https://mp.weixin.qq.com/s/4aXrNRo02pzycSMDP85rtw",
+    "wechat_biz": "MzkwMDI4NjgwOA==",
+    "directory_ids": ["1787e21c2bbebb1e"],
+    "evidence": "On 2026-10-20 the official medical-school homepage directly linked seven canonical WeChat articles, including this identity reference. Fresh anonymous HTTP verified all seven as 南京大学医学院 with the same public BIZ. Discovery is limited to actual links on this official page, not the account archive; article publisher, dates and complete media remain independently checked."
+  },
+  {
+    "id": "nju-atmosphere-students-wechat-official",
+    "name": "南雍气象微信公众号官网公开链接",
+    "url": "https://tuanwei.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南雍气象",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/ARPKTMsRuwCW8mCseMuVYw",
+    "wechat_biz": "Mzk0MTQ0MTIzOQ==",
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-youth-wechat-official",
+    "name": "南大青年微信公众号官网公开链接",
+    "url": "https://tuanwei.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南大青年",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/788Zj77WM-Le3TdPKmzb1g",
+    "wechat_biz": "MzA3NzExMDEyMQ==",
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission.",
+    "directory_ids": [
+      "98de5946ddd2a84b"
+    ]
+  },
+  {
+    "id": "nju-wechat-official",
+    "name": "南京大学微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南京大学",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/NUIRLHXM3y1oPYFWO_OJkA",
+    "wechat_biz": "MzAxODAzMjQ1NQ==",
+    "directory_ids": ["0b7a026f0901b771"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-global-wechat-official",
+    "name": "南大全球交流微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南大全球交流",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/kZnFVri_ibC8of2WUXf6hg",
+    "wechat_biz": "MzAwMDYzNDc4MQ==",
+    "directory_ids": ["e0f627fc1c248567"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-graduate-union-wechat-official",
+    "name": "南大研会微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南大研会",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/26yHGrwaBDGjgPuBRThLlQ",
+    "wechat_biz": "MzU1MTYxNDcxMw==",
+    "directory_ids": ["a6a2a8139da39f90"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-student-union-wechat-official",
+    "name": "南京大学学生会微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南京大学学生会",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/mIwGHm7pdftuORq3K6oD-g",
+    "wechat_biz": "MjM5MjY4NTY5NQ==",
+    "directory_ids": ["51794b723cc6a940"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-volunteer-wechat-official",
+    "name": "南大青协微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南大青协",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/0YYgJTuoR7dbZ5qVALtYXg",
+    "wechat_biz": "MzA3NTQ2ODUyOA==",
+    "directory_ids": ["67287affe6c6e76f"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-journalism-wechat-official",
+    "name": "南大新传微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南大新传",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/G_OqATK9RLxOEyUW-uwtrw",
+    "wechat_biz": "Mzg2NTQ5MzY2OA==",
+    "directory_ids": ["de26d716cfe5d76a"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-kaijia-wechat-official",
+    "name": "南京大学开甲书院微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南京大学开甲书院",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/HWAspDeDURXKmjxWHleXDA",
+    "wechat_biz": "Mzk0MjE5MDI5Nw==",
+    "directory_ids": ["7d964a4c958eafef"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-life-sciences-wechat-official",
+    "name": "南京大学生命科学学院微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南京大学生命科学学院",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/rh-atW3jzIDjQBsA58iD6w",
+    "wechat_biz": "MzAxNzUwMzI5NA==",
+    "directory_ids": ["8c51e0688088dd19"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-cs-graduate-wechat-official",
+    "name": "NJU计小妍微信公众号官网公开链接",
+    "url": "https://www.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "NJU计小妍",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/kgY7Ipq1cP6NxvdAjfEidQ",
+    "wechat_biz": "MzU2NDI3MzM5Nw==",
+    "directory_ids": ["c19c86f11877c855"],
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission."
+  },
+  {
+    "id": "nju-im-wechat-official",
+    "name": "南京大学信息管理学院微信公众号官网公开链接",
+    "url": "https://im.nju.edu.cn/",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "expected_identity": "南京大学信息管理学院",
+    "listing_identity": "南京大学",
+    "identity_url": "https://mp.weixin.qq.com/s/Br-BptME-CNoUqvxYQPiFA",
+    "wechat_biz": "MzkyOTcwNDM4MA==",
+    "evidence": "On 2026-10-20 this verified official NJU page directly linked the reference article; guarded anonymous HTTP confirmed its exact public nickname and BIZ. Only matching-publisher articles actually linked on this page are discovered; partial visible coverage, not the account archive. Article identity, dates and complete media remain independently checked before paid admission.",
+    "directory_ids": [
+      "679dc1212df4e1e6"
+    ]
+  },
+  {
+    "id": "nju-archives-wechat-official",
+    "name": "南京大学档案馆校史馆微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://dawww.nju.edu.cn/xxdt/xwdt.htm",
+    "listing_identity": "南京大学档案馆",
+    "expected_identity": "南京大学档案馆校史馆",
+    "identity_url": "https://mp.weixin.qq.com/s/l1825xdW-2aCfUBWsD_ULg",
+    "wechat_biz": "MzIwNjI5NTAzOA==",
+    "directory_ids": [
+      "8b40d44a1b1796c6"
+    ],
+    "evidence": "On 2026-10-20 guarded HTTP confirmed this current official news listing directly links the reference article. Earlier in the same operator session its exact public nickname and BIZ were independently verified from that original. The existing official-links collector must freshly revalidate identity and all media in the isolated no-payment acceptance before deployment; only actual links on this listing are covered, not the account archive. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage."
+  },
+  {
+    "id": "nju-publisher-wechat-official",
+    "name": "南京大学出版社微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "http://www.njupco.com/news/",
+    "listing_identity": "南京大学出版社",
+    "expected_identity": "南京大学出版社",
+    "identity_url": "https://mp.weixin.qq.com/s/kM643CpXrLr-Bi68Inxdzg",
+    "wechat_biz": "MzA4NDI0MzUyMQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 6 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "c3e12469a1bfe0da"
+    ]
+  },
+  {
+    "id": "nju-parent-education-wechat-official",
+    "name": "南大育教微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://xgb.nju.edu.cn/gsgg/list.htm",
+    "listing_identity": "学生工作部",
+    "expected_identity": "南大育教",
+    "identity_url": "https://mp.weixin.qq.com/s/thJbuquZGdmdHDoeIe-fOg",
+    "wechat_biz": "MzI1MzIyMzEyMg==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 4 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "c5c6f0bc08b6a660"
+    ]
+  },
+  {
+    "id": "nju-sociology-wechat-official",
+    "name": "南京大学社会学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://sociology.nju.edu.cn/17645/list.htm",
+    "listing_identity": "社会学院",
+    "expected_identity": "南京大学社会学院",
+    "identity_url": "https://mp.weixin.qq.com/s/K4yF3Cyv7EXMT3-NPs1TdA",
+    "wechat_biz": "MzI1OTA4Mjk3NA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "bc8268d5dba4e822"
+    ]
+  },
+  {
+    "id": "nju-mba-wechat-official",
+    "name": "南京大学MBA微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://nubs.nju.edu.cn/8897/list.htm",
+    "listing_identity": "南京大学商学院",
+    "expected_identity": "南京大学MBA",
+    "identity_url": "https://mp.weixin.qq.com/s/h6z5f1hXOCEZUbyU3u7pUQ",
+    "wechat_biz": "MzA3MTcyMTcyNg==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "b3508bfbd5dd9570"
+    ]
+  },
+  {
+    "id": "nju-psychology-wechat-official",
+    "name": "南京大学心理中心微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://njuxlzx.nju.edu.cn/48260/list.htm",
+    "listing_identity": "心理健康教育与研究中心",
+    "expected_identity": "南京大学心理中心",
+    "identity_url": "https://mp.weixin.qq.com/s/UQk8_3xN5rhG2mGefakJNQ",
+    "wechat_biz": "MzA5NDYzNTE3Ng==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 6 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "5dbc8901e60b3e5e"
+    ]
+  },
+  {
+    "id": "nju-union-wechat-official",
+    "name": "南京大学工会微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://gh.nju.edu.cn/main.htm",
+    "listing_identity": "南京大学工会",
+    "expected_identity": "南京大学工会",
+    "identity_url": "https://mp.weixin.qq.com/s/YhzfY_p_KvHuRkzmDo2AFA",
+    "wechat_biz": "MzkzOTgxMTIxNg==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 4 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "e72f773eadc7ba13"
+    ]
+  },
+  {
+    "id": "nju-teaching-development-wechat-official",
+    "name": "南大教师教学发展中心微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://dafls.nju.edu.cn/13166/list.htm",
+    "listing_identity": "大学外语部",
+    "expected_identity": "南大教师教学发展中心",
+    "identity_url": "https://mp.weixin.qq.com/s/gZf8HidBPco40yTqMQkmOg",
+    "wechat_biz": "MzA4MTQ4MjAwOQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage."
+  },
+  {
+    "id": "nju-administration-wechat-official",
+    "name": "南大机关微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://itsc.nju.edu.cn/xwdt/list.htm",
+    "listing_identity": "信息化建设管理服务中心",
+    "expected_identity": "南大机关",
+    "identity_url": "https://mp.weixin.qq.com/s/-QnvwL09PjqqmdHSHsdUaQ",
+    "wechat_biz": "Mzg5MjQ3NzU2OA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "8e1a68e059c549ad"
+    ]
+  },
+  {
+    "id": "nju-art-wechat-official",
+    "name": "南京大学艺术学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://art.nju.edu.cn/",
+    "listing_identity": "南京大学艺术学院",
+    "expected_identity": "南京大学艺术学院",
+    "identity_url": "https://mp.weixin.qq.com/s/QBrIsdBr0dhBFDHQW-lcJg",
+    "wechat_biz": "MzA3MjcyNTM3OQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 6 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "4bab7693a30c99c9"
+    ]
+  },
+  {
+    "id": "nju-graduate-education-wechat-official",
+    "name": "南京大学研究生教育微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://grawww.nju.edu.cn/",
+    "listing_identity": "南京大学研究生院",
+    "expected_identity": "南京大学研究生教育",
+    "identity_url": "https://mp.weixin.qq.com/s/Q_27aB6fgSDYnzZIT8MLNA",
+    "wechat_biz": "MzkwMTIyMTE2Mg==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 5 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "d8960c56691e21e9"
+    ]
+  },
+  {
+    "id": "nju-history-wechat-official",
+    "name": "南京大学历史学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://history.nju.edu.cn/",
+    "listing_identity": "历史学院",
+    "expected_identity": "南京大学历史学院",
+    "identity_url": "https://mp.weixin.qq.com/s/T6cXiQvJyVDkkt1tMTJ-dg",
+    "wechat_biz": "MzA5MDczMzg2OA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 4 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "797f5205367bebf5"
+    ]
+  },
+  {
+    "id": "nju-freshman-college-wechat-official",
+    "name": "南京大学新生学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": false,
+    "url": "https://xsxy.nju.edu.cn/",
+    "listing_identity": "新生学院",
+    "expected_identity": "南京大学新生学院",
+    "identity_url": "https://mp.weixin.qq.com/s/OSsn3vPLgpFey4QkUM2Ayw",
+    "wechat_biz": "MzkwNDE4ODYyMg==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. The subsequent real acceptance run on 2026-10-20 hit a verification barrier before any complete article was accepted for this source. It remains disabled; no login, CAPTCHA completion, alternate-reference bypass or retry was attempted. Independent complete-capture acceptance is required before explicit activation.",
+    "directory_ids": [
+      "e6529bef11e6023a"
+    ]
+  },
+  {
+    "id": "nju-ic-wechat-official",
+    "name": "南京大学集成电路学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://ic.nju.edu.cn/",
+    "listing_identity": "南京大学集成电路学院",
+    "expected_identity": "南京大学集成电路学院",
+    "identity_url": "https://mp.weixin.qq.com/s/X6SjnWXMiaLGTvwxLTwkng",
+    "wechat_biz": "Mzg4Nzk1NDA2OA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "3d293011a488978d"
+    ]
+  },
+  {
+    "id": "nju-china-us-center-wechat-official",
+    "name": "南京大学中美文化研究中心微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://alumni.nju.edu.cn/",
+    "listing_identity": "校友会",
+    "expected_identity": "南京大学中美文化研究中心",
+    "identity_url": "https://mp.weixin.qq.com/s/h75WOFpyM252u5c0LBsM7w",
+    "wechat_biz": "MzA4NDczNTI4MA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "a0f0c401bb704cf3"
+    ]
+  },
+  {
+    "id": "nju-kuangyaming-wechat-official",
+    "name": "南京大学匡亚明学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://alumni.nju.edu.cn/",
+    "listing_identity": "校友会",
+    "expected_identity": "南京大学匡亚明学院",
+    "identity_url": "https://mp.weixin.qq.com/s/ha0EL9wMyXz1XvAsfjSQ9g",
+    "wechat_biz": "MzkwNTU3MTA3OA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "86638beb701d2a47"
+    ]
+  },
+  {
+    "id": "nju-foreign-news-wechat-official",
+    "name": "南京大学外新社微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://dafls.nju.edu.cn/",
+    "listing_identity": "大学外语部",
+    "expected_identity": "南京大学外新社",
+    "identity_url": "https://mp.weixin.qq.com/s/hXERXBU9svz6XsW5hL7SWA",
+    "wechat_biz": "MzkzNjE0MDg0NQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "6fa1348ee398b8b8"
+    ]
+  },
+  {
+    "id": "nju-information-portal-wechat-official",
+    "name": "南京大学信息门户微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://itsc.nju.edu.cn/",
+    "listing_identity": "信息化建设管理服务中心",
+    "expected_identity": "南京大学信息门户",
+    "identity_url": "https://mp.weixin.qq.com/s/vHanPmNUF-TySnzX5UAFwQ",
+    "wechat_biz": "MzU3OTU2MzY2NQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 5 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "40cb813cf3426b2e"
+    ]
+  },
+  {
+    "id": "nju-accounting-wechat-official",
+    "name": "南大会计微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": false,
+    "url": "https://nubs.nju.edu.cn/8897/list.htm",
+    "listing_identity": "南京大学商学院",
+    "expected_identity": "南大会计",
+    "identity_url": "https://mp.weixin.qq.com/s/YkzVxmPgcitvrZkymKs-Fg",
+    "wechat_biz": "MjM5MTc3NzA3Ng==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. The subsequent real acceptance run on 2026-10-20 hit a verification barrier before any complete article was accepted for this source. It remains disabled; no login, CAPTCHA completion, alternate-reference bypass or retry was attempted. Independent complete-capture acceptance is required before explicit activation.",
+    "directory_ids": [
+      "a7a599c44ef4ee1c"
+    ]
+  },
+  {
+    "id": "nju-youxun-wechat-official",
+    "name": "南京大学有训书院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://xsxy.nju.edu.cn/",
+    "listing_identity": "新生学院",
+    "expected_identity": "南京大学有训书院",
+    "identity_url": "https://mp.weixin.qq.com/s/_ca7p_AicSwRbDNdGmkTcQ",
+    "wechat_biz": "Mzk0MDE5MTk3Mw==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 2 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "0253a08b1156d5fb"
+    ]
+  },
+  {
+    "id": "nju-software-wechat-official",
+    "name": "南京大学软件学院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://software.nju.edu.cn/",
+    "listing_identity": "软件学院",
+    "expected_identity": "南京大学软件学院",
+    "identity_url": "https://mp.weixin.qq.com/s/ejAJ8L_LcJ0-g4_cT67Kjw",
+    "wechat_biz": "MzAwNDIxMTEwOQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 4 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "dcafa41d6590b907"
+    ]
+  },
+  {
+    "id": "nju-archaeology-wechat-official",
+    "name": "南京大学考古文物系微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://history.nju.edu.cn/",
+    "listing_identity": "历史学院",
+    "expected_identity": "南京大学考古文物系",
+    "identity_url": "https://mp.weixin.qq.com/s/poX6ceyXAQ8-CqbDgUVtAQ",
+    "wechat_biz": "MzU4ODkzNDQ0NA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "805bd27793c85d98"
+    ]
+  },
+  {
+    "id": "nju-xingzhi-wechat-official",
+    "name": "南京大学行知书院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://xsxy.nju.edu.cn/",
+    "listing_identity": "新生学院",
+    "expected_identity": "南京大学行知书院",
+    "identity_url": "https://mp.weixin.qq.com/s/jEDqyuR1SEwQ3m3FxOcvOQ",
+    "wechat_biz": "Mzg5MjU1MjAyMA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 2 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "577f61b32466f916"
+    ]
+  },
+  {
+    "id": "nju-bingwen-wechat-official",
+    "name": "南京大学秉文书院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://xsxy.nju.edu.cn/",
+    "listing_identity": "新生学院",
+    "expected_identity": "南京大学秉文书院",
+    "identity_url": "https://mp.weixin.qq.com/s/ZywDZFtvmIfmSNEE2IRXPg",
+    "wechat_biz": "MzkzMTE5MDM1MA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "4cdcdec5651a25bb"
+    ]
+  },
+  {
+    "id": "nju-anbang-wechat-official",
+    "name": "南京大学安邦书院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://xsxy.nju.edu.cn/",
+    "listing_identity": "新生学院",
+    "expected_identity": "南京大学安邦书院",
+    "identity_url": "https://mp.weixin.qq.com/s/Y9KV1E18-XxN5e59q55AcQ",
+    "wechat_biz": "Mzk0NzE5NDkwOA==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "cc7ff0e18b32075d"
+    ]
+  },
+  {
+    "id": "nju-yuxiu-wechat-official",
+    "name": "南京大学毓琇书院微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://xsxy.nju.edu.cn/",
+    "listing_identity": "新生学院",
+    "expected_identity": "南京大学毓琇书院",
+    "identity_url": "https://mp.weixin.qq.com/s/o6vzFlQD9XTK0HUJ-SedxQ",
+    "wechat_biz": "Mzg5MTU0NDIzOQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Actual isolated guarded HTTP history collection on 2026-10-20 retained 1 complete articles for this publisher; exact BIZ/nickname, original response and media SHA-256, publication dates and offline v7 media preflight all passed. Both paid ledgers remained empty. Any failed or incomplete articles remain excluded from model admission; discovery still has partial coverage.",
+    "directory_ids": [
+      "cf96df58388ce4ba"
+    ]
+  },
+  {
+    "id": "nju-yangtze-industry-think-tank-wechat-official",
+    "name": "长江产发智库微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://iddi.nju.edu.cn/",
+    "listing_identity": "南京大学",
+    "expected_identity": "长江产发智库",
+    "identity_url": "https://mp.weixin.qq.com/s/ckSDd93tJmMe_qRj2Yz1VQ",
+    "wechat_biz": "MzIzNDQ0MDgzNQ==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Full-catalog acceptance on 2026-10-20 retained 2 complete publisher-matched articles with true dates, unchanged original response/media SHA-256 and offline v7 image preflight. No model requests or paid ledger rows. Discovery remains partial; any verification barrier stops subsequent probes.",
+    "directory_ids": [
+      "8f15a7bf72e1dda0"
+    ]
+  },
+  {
+    "id": "nju-micro-english-wechat-official",
+    "name": "微英语微信公众号官网公开链接",
+    "kind": "wechat_official_links",
+    "enabled": true,
+    "url": "https://dafls.nju.edu.cn/",
+    "listing_identity": "大学外语部",
+    "expected_identity": "微英语",
+    "identity_url": "https://mp.weixin.qq.com/s/igY0NzTfR_Krjv31tkgabA",
+    "wechat_biz": "MzA5MTAxMTkwNg==",
+    "evidence": "On 2026-10-20 this current verified official page directly linked the identity reference; guarded anonymous HTTP verified its exact public nickname and BIZ. The source covers only matching-publisher articles actually linked on this page, always partial rather than the account archive. Independent capture identity, true publication dates, complete media and all-version paid-URL protection remain mandatory. Full-catalog acceptance on 2026-10-20 retained 1 complete publisher-matched articles with true dates, unchanged original response/media SHA-256 and offline v7 image preflight. No model requests or paid ledger rows. Discovery remains partial; any verification barrier stops subsequent probes.",
+    "directory_ids": [
+      "4af71ad28591591d"
     ]
   }
 ]

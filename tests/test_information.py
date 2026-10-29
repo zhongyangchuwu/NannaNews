@@ -698,6 +698,8 @@ class InformationTests(unittest.TestCase):
             response = client.post('/acquire',headers={'Accept':'application/json'},data={
                 'csrf_token':'csrf-fixture','public_confirm':'yes','public_text':TEXT,
                 'public_images':(io.BytesIO(raw),'poster.bmp')})
+        self.addCleanup(response.request.environ['wsgi.input'].close)
+        self.addCleanup(response.close)
         self.assertEqual(response.status_code,201,response.get_json())
         with closing(runtime.connect_db()) as conn:
             document_id = conn.execute('SELECT id FROM source_documents').fetchone()[0]
@@ -705,7 +707,10 @@ class InformationTests(unittest.TestCase):
         self.assertEqual(captured['media'][0]['mime'],'image/bmp')
         self.assertEqual(base64.b64decode(captured['media'][0]['data']),raw)
         self.model.assert_called_once()
-        self.assertEqual(client.post('/ordinary',data={'file':(io.BytesIO(raw),'poster.bmp')}).status_code,413)
+        rejected = client.post('/ordinary',data={'file':(io.BytesIO(raw),'poster.bmp')})
+        self.addCleanup(rejected.request.environ['wsgi.input'].close)
+        self.addCleanup(rejected.close)
+        self.assertEqual(rejected.status_code,413)
         self.assertEqual(app.config['MAX_CONTENT_LENGTH'],16*1024*1024)
 
     def test_later_verified_source_and_date_metadata_do_not_duplicate_content(self):

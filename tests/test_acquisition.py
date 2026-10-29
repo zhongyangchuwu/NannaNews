@@ -1,6 +1,8 @@
 """Behavior tests; external DNS/HTTP are the only faked execution boundaries."""
 import base64
+from contextlib import closing
 from dataclasses import replace
+from http.client import IncompleteRead
 import io
 import json
 import math
@@ -231,6 +233,56 @@ class AcquisitionTests(AcquisitionFixture, unittest.TestCase):
                 acquisition.fetch_public_resource('http://example.org/', max_bytes=100)
         self.assertEqual(caught.exception.code, 'source_too_large')
 
+    def test_article_class_excludes_site_navigation_text_and_images(self):
+        html = (f'<div class="header">站点导航<img src="/logo.png"></div>'
+                f'<div class="article w"><h1>公开讲座</h1><div class="word">'
+                f'<p class="text">{TEXT}<img src="/poster.jpg"><img src="/photo.png"></p>'
+                '</div></div><div class="footer">站点版权<img src="/footer.png"></div>')
+        with patch.object(acquisition, 'fetch_public_resource',
+                          return_value=(html.encode(), 'text/html', 'https://college.nju.edu.cn/news/event.html')):
+            captured = acquisition.fetch_document('https://college.nju.edu.cn/news/event.html')
+        self.assertEqual(captured['title'], '公开讲座')
+        self.assertIn(TEXT, captured['text'])
+        self.assertNotIn('站点导航', captured['text'])
+        self.assertNotIn('站点版权', captured['text'])
+        self.assertEqual(captured['images'], [
+            'https://college.nju.edu.cn/poster.jpg', 'https://college.nju.edu.cn/photo.png'])
+
+    def test_specific_article_body_precedes_generic_article_wrapper(self):
+        html = (f'<div class="article w">非正文组件<img src="/decoration.png">'
+                f'<div class="v_news_content">{TEXT}<img src="/poster.jpg"></div></div>')
+        with patch.object(acquisition, 'fetch_public_resource',
+                          return_value=(html.encode(), 'text/html', 'https://college.nju.edu.cn/news/event.html')):
+            captured = acquisition.fetch_document('https://college.nju.edu.cn/news/event.html')
+        self.assertIn(TEXT, captured['text'])
+        self.assertNotIn('非正文组件', captured['text'])
+        self.assertEqual(captured['images'], ['https://college.nju.edu.cn/poster.jpg'])
+
+    def test_vsb_rendered_local_images_override_stale_wechat_urls_only_in_vsb_articles(self):
+        lazy = 'https://mmbiz.qpic.cn/stale-original?wx_fmt=jpeg'
+        for wrapper, rendered, expected in [
+            ('v_news_content', '/__local/FA/7D/poster.jpg', 'https://college.nju.edu.cn/__local/FA/7D/poster.jpg'),
+            ('v_news_content', 'https://foreign.example/__local/poster.jpg', lazy),
+            ('article', '/__local/FA/7D/poster.jpg', lazy),
+        ]:
+            html = (f'<h1>公开活动</h1><div class="{wrapper}">完整公开通知正文'
+                    f'<img src="{rendered}" data-src="{lazy}"></div>')
+            with self.subTest(wrapper=wrapper, rendered=rendered), patch.object(
+                    acquisition, 'fetch_public_resource', return_value=(html.encode(), 'text/html', 'https://college.nju.edu.cn/info/1043/22491.htm')):
+                captured = acquisition.fetch_document('https://college.nju.edu.cn/info/1043/22491.htm')
+            self.assertEqual(captured['images'], [expected])
+            self.assertEqual(base64.b64decode(captured['raw_response_base64']), html.encode())
+            self.assertEqual(captured['raw_content'], html)
+
+    def test_wechat_lazy_image_remains_authoritative_even_with_vsb_markup(self):
+        lazy = 'https://mmbiz.qpic.cn/real-article?wx_fmt=png'
+        html = ('<h1 id="activity-name">公开文章</h1><div id="js_content" class="v_news_content">'
+                f'公开正文<img src="/__local/placeholder.jpg" data-src="{lazy}"></div>')
+        with patch.object(acquisition, 'fetch_public_resource',
+                          return_value=(html.encode(), 'text/html', 'https://mp.weixin.qq.com/s/public')):
+            captured = acquisition.fetch_document('https://mp.weixin.qq.com/s/public')
+        self.assertEqual(captured['images'], [lazy])
+
     def test_wechat_readable_body_data_src_and_empty_blocked_states(self):
         html = '<h1 id="activity-name">公开文章</h1><div id="js_content">正文信息<img data-src="https://mmbiz.qpic.cn/image?wx_fmt=png"></div><em id="publish_time">2026-10-12</em>'
         with patch.object(acquisition, 'fetch_public_resource', return_value=(html.encode(), 'text/html', 'https://mp.weixin.qq.com/s?a=1')):
@@ -261,6 +313,56 @@ class AcquisitionTests(AcquisitionFixture, unittest.TestCase):
         with patch.object(acquisition, 'fetch_public_resource', return_value=(b'{}', 'application/json', 'https://job.nju.edu.cn/api')):
             with self.assertRaises(acquisition.AcquisitionError):
                 acquisition.fetch_document(cases[0][0])
+
+    def test_official_job_news_detail_accepts_legacy_identifier_and_publication(self):
+        # Bounded excerpt of the anonymous official detail response, 2026-10-19.
+        source = 'https://job.nju.edu.cn/career/info/j_recruit_news_1340?type=NEWS'
+        api = 'https://job.nju.edu.cn/api/career/content/informations/j_recruit_news_1340'
+        record = {'id': 'j_recruit_news_1340', 'title': '南京大学2027届毕业生网上签约须知',
+                  'content': '<p>为进一步优化就业签约流程，为用人单位和毕业生提供更加优质的服务，目前毕业生网上签约系统已全面开放。</p>',
+                  'type': 'NEWS', 'status': 'PUBLISHED', 'displayTarget': 'PORTAL',
+                  'loginRequired': False, 'publishedAt': '2026-10-09 00:00:00'}
+        raw = json.dumps(record, ensure_ascii=False).encode()
+        with patch.object(acquisition, 'fetch_public_resource', return_value=(raw, 'application/json', api)) as fetch:
+            captured = acquisition.fetch_document(source)
+        fetch.assert_called_once_with(api)
+        self.assertEqual(captured['canonical_url'], source)
+        self.assertEqual(captured['source_published_date'], '2026-10-09')
+        self.assertIn('网上签约系统已全面开放', captured['text'])
+        self.assertEqual(base64.b64decode(captured['raw_response_base64']), raw)
+
+    def test_official_job_information_401_preserves_blocked_evidence_without_fallback(self):
+        # The official frontend uses this same detail API and logs in on HTTP 401.
+        source = 'https://job.nju.edu.cn/career/info/631177954285588481'
+        api = 'https://job.nju.edu.cn/api/career/content/informations/631177954285588481'
+        requests = []
+
+        class Connection:
+            def __init__(self, *args):
+                self.sock = None
+
+            def request(self, method, path, headers):
+                requests.append((method, path, headers))
+
+            def getresponse(self):
+                return SourceResponse(401, {'Content-Type': 'application/json'}, b'{}')
+
+            def close(self):
+                pass
+
+        with patch.object(acquisition, '_PinnedHTTPS', Connection):
+            with self.assertRaises(acquisition.AcquisitionError) as caught:
+                acquisition.fetch_document(source)
+        self.assertEqual(caught.exception.code, 'source_blocked')
+        self.assertEqual(caught.exception.source_response['canonical_url'], source)
+        self.assertEqual(caught.exception.source_response['resolved_url'], api)
+        self.assertEqual(caught.exception.source_response['http_status'], 401)
+        self.assertEqual(base64.b64decode(caught.exception.source_response['raw_response_base64']), b'{}')
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][:2], ('GET', '/api/career/content/informations/631177954285588481'))
+        self.assertNotIn('Cookie', requests[0][2])
+        self.assertNotIn('Authorization', requests[0][2])
+        self.assertEqual(self.transport.calls, [])
 
     def test_missing_configuration_is_actionable_and_does_not_call_model(self):
         runtime.settings = replace(runtime.settings, model_base_url='')
@@ -312,6 +414,58 @@ class AcquisitionTests(AcquisitionFixture, unittest.TestCase):
                 with self.assertRaises(acquisition.AcquisitionError) as caught:
                     acquisition.extract_document(document())
                 self.assertEqual(caught.exception.code, 'model_response_invalid')
+                self.assertIs(caught.exception.model_transport_failure, True)
+
+    def test_incomplete_read_preserves_http_metadata_and_transport_failure(self):
+        class IncompleteModelResponse(ModelResponse):
+            def read1(self, size):
+                raise IncompleteRead(b'partial response')
+
+        for status, retry_after in ((429, '3600'), (503, '7200'), (401, None), (403, None)):
+            with self.subTest(status=status):
+                response = IncompleteModelResponse(model_body([item()]), status=status)
+                if retry_after is not None:
+                    response.headers['Retry-After'] = retry_after
+                self.transport.response = response
+                calls = len(self.transport.calls)
+                with self.assertRaises(acquisition.AcquisitionError) as caught:
+                    acquisition.extract_document(document())
+                self.assertEqual(caught.exception.code, 'model_response_invalid')
+                self.assertEqual(str(caught.exception), '模型 API 响应不完整，未创建草稿。')
+                self.assertEqual(caught.exception.model_http_status, status)
+                self.assertEqual(caught.exception.model_retry_after_seconds,
+                                 float(retry_after) if retry_after is not None else None)
+                self.assertIs(caught.exception.model_transport_failure, True)
+                self.assertEqual(len(self.transport.calls), calls + 1)
+
+    def test_body_timeout_preserves_http_metadata_without_truncation_flag(self):
+        class TimeoutModelResponse(ModelResponse):
+            def read1(self, size):
+                raise TimeoutError('response timed out')
+
+        for status, retry_after in ((429, '3600'), (401, None)):
+            with self.subTest(status=status):
+                response = TimeoutModelResponse(model_body([item()]), status=status)
+                if retry_after is not None:
+                    response.headers['Retry-After'] = retry_after
+                self.transport.response = response
+                calls = len(self.transport.calls)
+                with self.assertRaises(acquisition.AcquisitionError) as caught:
+                    acquisition.extract_document(document())
+                self.assertEqual(caught.exception.code, 'model_unavailable')
+                self.assertEqual(str(caught.exception), '模型 API 连接或审计写入失败；不会自动重试。')
+                self.assertEqual(caught.exception.model_http_status, status)
+                self.assertEqual(caught.exception.model_retry_after_seconds,
+                                 float(retry_after) if retry_after is not None else None)
+                self.assertIs(caught.exception.model_transport_failure, False)
+                self.assertEqual(len(self.transport.calls), calls + 1)
+
+    def test_valid_model_json_with_invalid_output_is_not_transport_failure(self):
+        self.transport.response = ModelResponse(model_body([]))
+        with self.assertRaises(acquisition.AcquisitionError) as caught:
+            acquisition.extract_document(document())
+        self.assertEqual(caught.exception.code, 'model_output_invalid')
+        self.assertIs(caught.exception.model_transport_failure, False)
 
     def test_provider_error_dump_and_key_are_not_exposed(self):
         self.transport.response = ModelResponse({'error': 'private-test-key provider debug data'}, status=401)
@@ -320,6 +474,36 @@ class AcquisitionTests(AcquisitionFixture, unittest.TestCase):
         self.assertIn('HTTP 401', str(caught.exception))
         self.assertNotIn('private-test-key', str(caught.exception))
         self.assertNotIn('provider debug', str(caught.exception))
+
+    def test_model_http_errors_expose_safe_status_and_retry_after(self):
+        self.transport.response = ModelResponse({'error': 'private provider data'}, status=429)
+        self.transport.response.headers['Retry-After'] = '120'
+        calls = len(self.transport.calls)
+        with self.assertRaises(acquisition.AcquisitionError) as caught:
+            acquisition.extract_document(document())
+        self.assertEqual(caught.exception.code, 'model_http_error')
+        self.assertEqual(caught.exception.status, 502)
+        self.assertEqual(str(caught.exception), '模型 API 返回 HTTP 429；未创建草稿，不会自动重试。')
+        self.assertEqual(caught.exception.model_http_status, 429)
+        self.assertEqual(caught.exception.model_retry_after_seconds, 120.0)
+        self.assertEqual(len(self.transport.calls), calls + 1)
+
+        self.transport.response = ModelResponse({'error': 'private provider data'}, status=503)
+        self.transport.response.headers['Retry-After'] = 'Fri, 31 Dec 2099 23:59:59 GMT'
+        with self.assertRaises(acquisition.AcquisitionError) as caught:
+            acquisition.extract_document(document())
+        self.assertEqual(caught.exception.model_http_status, 503)
+        self.assertTrue(math.isfinite(caught.exception.model_retry_after_seconds))
+        self.assertGreater(caught.exception.model_retry_after_seconds, 0)
+
+        for value in ('0', '1.5', 'NaN', 'not-a-date'):
+            with self.subTest(retry_after=value):
+                self.transport.response = ModelResponse({'error': 'private provider data'}, status=429)
+                self.transport.response.headers['Retry-After'] = value
+                with self.assertRaises(acquisition.AcquisitionError) as caught:
+                    acquisition.extract_document(document())
+                self.assertEqual(caught.exception.model_http_status, 429)
+                self.assertIsNone(caught.exception.model_retry_after_seconds)
 
     def test_non_json_provider_body_is_retained_privately_without_retry(self):
         raw = b'private-model-body\xff\n'
@@ -668,7 +852,7 @@ class PersistedAcquisitionTests(AcquisitionFixture, unittest.TestCase):
         self.assertFalse(repeated)
         self.assertEqual(ids, repeated_ids)
         self.assertEqual(len(ids), 2)
-        with sqlite3.connect(self.database) as conn:
+        with closing(sqlite3.connect(self.database)) as conn:
             entries = conn.execute('SELECT status,publish_date,describer,reviewer,link FROM entries ORDER BY id').fetchall()
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM acquisitions').fetchone()[0], 1)
         self.assertEqual(entries, [('described', None, 'model:gpt-6-luna', None, evidence['canonical_url'])] * 2)
@@ -695,7 +879,7 @@ class PersistedAcquisitionTests(AcquisitionFixture, unittest.TestCase):
         ids, created = acquisition.insert_drafts(evidence, drafts, 'editor')
         self.assertTrue(created)
         self.assertEqual(len(ids), 3)
-        with sqlite3.connect(self.database) as conn:
+        with closing(sqlite3.connect(self.database)) as conn:
             entries = conn.execute('SELECT title,description,status,publish_date FROM entries ORDER BY id').fetchall()
         self.assertEqual(entries, [
             ('共享引用活动甲', '活动甲描述，14:00在仙林。', 'described', None),
@@ -708,7 +892,7 @@ class PersistedAcquisitionTests(AcquisitionFixture, unittest.TestCase):
         drafts[1]['event_key'] = drafts[0]['event_key']
         with self.assertRaises(sqlite3.IntegrityError):
             acquisition.insert_drafts(evidence, drafts, 'editor')
-        with sqlite3.connect(self.database) as conn:
+        with closing(sqlite3.connect(self.database)) as conn:
             for table in ('entries', 'acquisitions', 'acquisition_candidates'):
                 self.assertEqual(conn.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0], 0)
 
@@ -720,7 +904,7 @@ class PersistedAcquisitionTests(AcquisitionFixture, unittest.TestCase):
         ids, created = acquisition.insert_drafts(changed, other, 'editor')
         self.assertTrue(created)
         self.assertEqual(len(ids), 2)
-        with sqlite3.connect(self.database) as conn:
+        with closing(sqlite3.connect(self.database)) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM entries').fetchone()[0], 4)
 
     def test_responses_failures_retain_raw_source_then_multi_events_import_once(self):
@@ -746,7 +930,7 @@ class PersistedAcquisitionTests(AcquisitionFixture, unittest.TestCase):
                 response = client.post('/acquire', data=form, headers=headers)
                 self.assertEqual(response.status_code, 502)
                 self.assertEqual(response.get_json()['code'], 'model_output_invalid')
-                with sqlite3.connect(self.database) as conn:
+                with closing(sqlite3.connect(self.database)) as conn:
                     for table in ('entries', 'acquisitions', 'acquisition_candidates'):
                         self.assertEqual(conn.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0], 0)
                     self.assertEqual(conn.execute('SELECT model_status FROM source_documents').fetchall(), [('failed',)])
@@ -765,7 +949,7 @@ class PersistedAcquisitionTests(AcquisitionFixture, unittest.TestCase):
             self.assertEqual(len(self.transport.calls), 3)
             self.assertEqual(information.query_records({})['total'], 2)
             self.assertTrue(all(row['entry_id'] is not None for row in information.query_records({})['records']))
-        with sqlite3.connect(self.database) as conn:
+        with closing(sqlite3.connect(self.database)) as conn:
             rows = conn.execute('SELECT describer,status,publish_date FROM entries ORDER BY id').fetchall()
         self.assertEqual(rows, [('model:gpt-6-luna', 'described', None)] * 2)
 

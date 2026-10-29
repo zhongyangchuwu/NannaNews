@@ -27,6 +27,7 @@ from nannanews import acquisition
 from nannanews import information
 from nannanews import runtime
 from nannanews import schema
+from nannanews import wechat_public
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -174,6 +175,10 @@ def _migrate_schema(db):
 def _definition_key(definition):
     identity = {key: definition.get(key) for key in ('url', 'kind', 'publisher_college',
         'identity_url', 'expected_identity', 'article_pattern', 'detail_path', 'scan_all_pages')}
+    if definition.get('kind') in wechat_public.SOURCE_KINDS:
+        identity['wechat_biz'] = definition.get('wechat_biz')
+    if definition.get('kind') == 'wechat_official_links':
+        identity['listing_identity'] = definition.get('listing_identity')
     return hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
@@ -224,27 +229,36 @@ def _configuration(definition):
 def _validate_definition(definition):
     if not isinstance(definition.get('name'), str) or not definition['name'].strip():
         raise ValueError('Source definition requires a name.')
-    if type(definition['enabled']) is not bool or definition['kind'] not in ('html', 'nju_job'):
+    if type(definition['enabled']) is not bool or definition['kind'] not in (
+            'html', 'nju_job', 'nju_math_reports', *wechat_public.SOURCE_KINDS):
         raise ValueError('Source definition enabled/kind is invalid.')
-    definition['url'] = acquisition.canonical_url(definition.get('url'))
-    definition['identity_url'] = acquisition.canonical_url(definition.get('identity_url'))
-    if urlsplit(definition['url']).hostname != urlsplit(definition['identity_url']).hostname:
+    if definition['kind'] in wechat_public.SOURCE_KINDS:
+        wechat_public.validate_definition(definition)
+    else:
+        definition['url'] = acquisition.canonical_url(definition.get('url'))
+        definition['identity_url'] = acquisition.canonical_url(definition.get('identity_url'))
+    if (definition['kind'] != 'wechat_official_links'
+            and urlsplit(definition['url']).hostname != urlsplit(definition['identity_url']).hostname):
         raise ValueError('Publisher identity and listing hosts must match.')
     if not isinstance(definition.get('expected_identity'), str) or not definition['expected_identity'].strip():
         raise ValueError('Source definition requires an expected publisher identity.')
     college = definition['publisher_college']
     if college is not None and (not isinstance(college, str) or college not in definition['expected_identity']):
         raise ValueError('Publisher college must match the expected identity.')
-    if definition['kind'] == 'html':
+    if definition['kind'] in ('html', 'nju_math_reports'):
         if not isinstance(definition.get('article_pattern'), str) or not definition['article_pattern']:
-            raise ValueError('HTML source definition requires an article pattern.')
+            raise ValueError('Article-list source definition requires an article pattern.')
         re.compile(definition['article_pattern'])
-    else:
+    if definition['kind'] == 'nju_job':
         endpoints = {'/api/career/content/informations': '/career/info/',
                      '/api/career/job/fair/specifics': '/career/specifics/'}
         parts = urlsplit(definition['url'])
         if parts.hostname != 'job.nju.edu.cn' or endpoints.get(parts.path) != definition.get('detail_path'):
             raise ValueError('Job source endpoint/detail mapping is not supported.')
+    elif definition['kind'] == 'nju_math_reports':
+        _, parameters = _math_page_parameters(definition['url'])
+        if parameters['currentPage'] != 1:
+            raise ValueError('Math report discovery must start from page one.')
     return definition
 
 
@@ -402,6 +416,9 @@ def _soup(url, expected_host, *, preserve_scripts=False):
 
 
 def _validate_identity(definition):
+    if definition['kind'] in wechat_public.SOURCE_KINDS:
+        wechat_public.verify_document(acquisition.fetch_document(definition['identity_url']), definition)
+        return
     identity_url = acquisition.canonical_url(definition['identity_url'])
     host = urlsplit(definition['url']).hostname
     if urlsplit(identity_url).hostname != host:
@@ -556,6 +573,61 @@ def _job_listing(definition, page_url):
         raise acquisition.AcquisitionError('就业门户公开列表/分页结构不符合已验证 API。', 'source_empty') from None
 
 
+def _math_page_parameters(url):
+    parts = urlsplit(url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    keys = {'channelId', 'pageSize', 'currentPage'}
+    if (parts.hostname != 'math.nju.edu.cn' or parts.path != '/njdx/front/sxxx/reports.do'
+            or len(pairs) != len(keys) or {key for key, _ in pairs} != keys
+            or any(not re.fullmatch('[0-9]+', value) or int(value) < 1 for _, value in pairs)):
+        raise ValueError('Math report endpoint requires its publisher, channel and positive pagination parameters.')
+    return parts, {key: int(value) for key, value in pairs}
+
+
+def _math_reports_listing(definition, page_url):
+    parts, parameters = _math_page_parameters(page_url)
+    body, mime, resolved = acquisition.fetch_public_resource(page_url)
+    resolved_parts, resolved_parameters = _math_page_parameters(resolved)
+    if resolved_parameters != parameters or resolved_parts.hostname != parts.hostname:
+        raise acquisition.AcquisitionError('数学学院报告列表重定向改变了栏目或分页。', 'source_identity')
+    try:
+        # The official endpoint declares text/html while returning a JSON object.
+        # Parse its documented data, never execute the page's JavaScript.
+        data = json.loads(_text(body, mime))
+        reports, total = data['reports'], data['pages']
+        if (not isinstance(reports, list) or type(total) is not int or total < 0
+                or any(type(data.get(key)) is not int or data[key] != value
+                       for key, value in parameters.items())
+                or (total == 0 and (reports or parameters['currentPage'] != 1))
+                or (total > 0 and parameters['currentPage'] > total)):
+            raise ValueError
+        pattern = re.compile(definition['article_pattern'])
+        links = []
+        for report in reports:
+            url = acquisition.canonical_url(urljoin(page_url, report['url']))
+            article = urlsplit(url)
+            if article.hostname != parts.hostname or not pattern.fullmatch(article.path):
+                raise ValueError
+            # The official list emits HTTP links; the same publisher serves these
+            # articles over HTTPS, as does its public report page.
+            url = urlunsplit(('https', article.netloc, article.path, article.query, ''))
+            published = _api_time(report.get('releasetime'))
+            if isinstance(published, datetime):
+                published = published.date()
+            links.append({'url': url,
+                          'published_date': published.isoformat() if published else None,
+                          'event_start': _api_time(report.get('field_8925')),
+                          'disallowed': False})
+        pages = []
+        if parameters['currentPage'] < total:
+            query = [(key, str(parameters['currentPage'] + 1) if key == 'currentPage' else value)
+                     for key, value in parse_qsl(parts.query, keep_blank_values=True)]
+            pages.append(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), '')))
+        return links, pages
+    except (ValueError, KeyError, TypeError, acquisition.AcquisitionError):
+        raise acquisition.AcquisitionError('数学学院公开报告列表或分页结构不可读取。', 'source_empty') from None
+
+
 def _definition(source):
     with _db() as db:
         row = db.execute('SELECT definition_json FROM daily_source_state WHERE source_id=?', (source['id'],)).fetchone()
@@ -585,8 +657,13 @@ def _enqueue_page(db, source_id, url, stamp, history, definition_key, refresh=Fa
 
 def _discover(source, definition, run_id, stamp, page_limit, result, mode='new', deadline=None):
     source_id = source['id']
+    scan_all_pages = bool(definition.get('scan_all_pages')) or definition['kind'] == 'nju_math_reports'
     clock = _now(datetime.fromisoformat(stamp))
     _validate_identity(definition)
+    if definition['kind'] == 'wechat_gui':
+        # This run's public reference, never cached GUI/source state, gates any
+        # continuation of the current definition's already discovered URLs.
+        result['_identity_verified'] = True
     with _db() as db:
         state = db.execute('SELECT bootstrap_at,bootstrap_key,page_fetch_count FROM daily_source_state WHERE source_id=?', (source_id,)).fetchone()
         key = definition['definition_key']
@@ -609,15 +686,30 @@ def _discover(source, definition, run_id, stamp, page_limit, result, mode='new',
             result.update(status='partial', message='临近每日采集时段，历史任务停止提交并保留待处理队列。')
             break
         with _db() as db:
-            page_scope = '' if mode == 'history' or definition.get('scan_all_pages') else 'AND history=0'
+            page_scope = '' if mode == 'history' or scan_all_pages else 'AND history=0'
             frontier_order = 'frontier,' if continuation_count % 3 == 2 else 'frontier DESC,'
             page = db.execute(f"SELECT * FROM daily_pages WHERE source_id=? AND definition_key=? AND state='pending' {page_scope} AND (attempt_run IS NULL OR attempt_run!=?) ORDER BY url!=?,{frontier_order}history,checked_at IS NOT NULL,checked_at,first_seen,url LIMIT 1", (source_id, key, run_id, definition['url'])).fetchone()
             if page is None:
                 break
             db.execute("UPDATE daily_pages SET state='fetching', attempt_run=? WHERE source_id=? AND url=?", (run_id, source_id, page['url']))
         try:
-            listing = _job_listing if definition['kind'] == 'nju_job' else _html_listing
-            links, next_pages = listing(definition, page['url'])
+            if definition['kind'] in wechat_public.SOURCE_KINDS:
+                if definition['kind'] == 'wechat_gui':
+                    from nannanews.wechat_desktop import discover_articles
+                else:
+                    discover_articles = wechat_public.discover_official_articles
+                snapshot = discover_articles(definition, page_limit=page_limit, deadline=deadline)
+                links, next_pages = snapshot['links'], []
+                if not snapshot['complete']:
+                    result.update(status='partial', message=snapshot['message'])
+            else:
+                if definition['kind'] == 'nju_job':
+                    listing = _job_listing
+                elif definition['kind'] == 'nju_math_reports':
+                    listing = _math_reports_listing
+                else:
+                    listing = _html_listing
+                links, next_pages = listing(definition, page['url'])
         except Exception as error:
             with _db() as db:
                 db.execute("UPDATE daily_pages SET state='pending' WHERE source_id=? AND url=?", (source_id, page['url']))
@@ -656,6 +748,8 @@ def _discover(source, definition, run_id, stamp, page_limit, result, mode='new',
                 published = link['published_date'] or (prior['source_published_date'] if prior else None)
                 if not published and prior and prior['priority_kind'] == 'publication':
                     published = prior['priority_date']
+                if definition['kind'] in wechat_public.SOURCE_KINDS and not published:
+                    cohort = False
                 eligible = _eligible(cohort, published, bootstrap or stamp, clock, event_start)
                 # Explicit listing evidence can qualify retained unpaid raw for its
                 # first extraction, even if its queue row still says pending. Reuse
@@ -684,26 +778,44 @@ def _discover(source, definition, run_id, stamp, page_limit, result, mode='new',
                         db.execute("UPDATE daily_links SET last_seen=?,definition_key=?,priority_date=COALESCE(?,priority_date),priority_kind=COALESCE(?,priority_kind),eligible=?,state=CASE WHEN ? THEN 'ready' WHEN state='disallowed' THEN 'pending' ELSE state END,processed_at=CASE WHEN ? THEN NULL ELSE processed_at END WHERE id=?", (stamp, key, priority_date, priority_kind, int(eligible), int(promote), int(promote), prior[0]))
             # A known incremental page is the discovery frontier. Bootstrap/archive
             # pagination is always resumed, bounded per run and visible as backlog.
-            if bootstrap is None or page['history'] or new_links or definition.get('scan_all_pages'):
+            if bootstrap is None or page['history'] or new_links or scan_all_pages:
                 for url in next_pages:
-                    history = bool(definition.get('scan_all_pages')) or bootstrap is None or bool(page['history']) or boundary
+                    history = scan_all_pages or bootstrap is None or bool(page['history']) or boundary
                     _enqueue_page(db, source_id, url, stamp, history, key,
-                                  refresh=bool(definition.get('scan_all_pages')) or (bootstrap is not None and not history))
+                                  refresh=scan_all_pages or (bootstrap is not None and not history))
                     if advance_frontier and url != definition['url']:
                         db.execute("UPDATE daily_pages SET frontier=1 WHERE source_id=? AND url=? AND definition_key=? AND state='pending'", (source_id, url, key))
-            db.execute("UPDATE daily_pages SET state='done',frontier=0,checked_at=? WHERE source_id=? AND url=?", (stamp, source_id, page['url']))
+            manual_halt = definition['kind'] == 'wechat_gui' and snapshot.get('verification_required') is True
+            db.execute('UPDATE daily_pages SET state=?,frontier=0,checked_at=? WHERE source_id=? AND url=?',
+                       ('pending' if manual_halt else 'done', stamp, source_id, page['url']))
             if page['url'] != definition['url']:
                 continuation_count += 1
                 db.execute('UPDATE daily_source_state SET page_fetch_count=? WHERE source_id=?', (continuation_count, source_id))
             if bootstrap is None:
                 bootstrap = stamp
                 db.execute('UPDATE daily_source_state SET bootstrap_at=?,bootstrap_key=? WHERE source_id=?', (stamp, key, source_id))
+        if manual_halt:
+            # Retain URLs already observed, but never drain this source's queue
+            # or navigate another account to work around a manual challenge.
+            error = acquisition.AcquisitionError(snapshot.get('message') or '微信公开桌面等待人工验证。',
+                                                 'source_verification_required')
+            error.verification_required = True
+            raise error
         if page['url'] == definition['url']:
             root_verified = True
     information.update_source(source_id, enabled=True, status='verified', message='公开发布者身份与文章列表已验证。', last_checked_at=stamp)
 
 
-def _capture(link, actor, stamp, run_id, result):
+def _wechat_prior_payment(db, source_url):
+    """Daily WeChat discovery never repays a previously attempted URL version."""
+    return db.execute('''SELECT 1 FROM source_documents d WHERE d.source_url=? AND
+        (d.model_status IN ('completed','failed','extracting')
+         OR EXISTS(SELECT 1 FROM source_document_model_attempts a WHERE a.document_id=d.id)
+         OR EXISTS(SELECT 1 FROM daily_model_attempts a WHERE a.document_id=d.id)) LIMIT 1''',
+        (source_url,)).fetchone() is not None
+
+
+def _capture(link, definition, actor, stamp, run_id, result):
     with _db() as db:
         db.execute("UPDATE daily_links SET state='fetching',attempt_run=? WHERE id=?", (run_id, link['id']))
     try:
@@ -711,10 +823,13 @@ def _capture(link, actor, stamp, run_id, result):
         # A safe public redirect does not establish publisher ownership.
         if urlsplit(document['resolved_url']).hostname != urlsplit(link['url']).hostname:
             raise acquisition.AcquisitionError('文章跳转到其他发布者，未归属当前来源。', 'source_identity')
+        wechat = definition['kind'] in wechat_public.SOURCE_KINDS
+        if wechat:
+            wechat_public.verify_document(document, definition)
         saved = information.save_document(document, source_id=link['source_id'], actor=actor)
         result['fetched'] += 1
-        published = document.get('source_published_date')
-        if not published and link['priority_kind'] == 'publication':
+        published = wechat_public.published_date(document) if wechat else document.get('source_published_date')
+        if not wechat and not published and link['priority_kind'] == 'publication':
             published = link['priority_date']
         with _db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -722,9 +837,9 @@ def _capture(link, actor, stamp, run_id, result):
             prior_attempt = db.execute('SELECT status FROM daily_model_attempts WHERE document_id=?', (saved['id'],)).fetchone()
             scope = db.execute('SELECT bootstrap_at FROM daily_source_state WHERE source_id=? AND bootstrap_key=?',
                                (link['source_id'], link['definition_key'])).fetchone()
-            eligible = _eligible(link['eligible'], published, scope['bootstrap_at'] if scope else None,
+            eligible = _eligible(link['eligible'] if not wechat or published else False, published, scope['bootstrap_at'] if scope else None,
                                  _now(datetime.fromisoformat(stamp)),
-                                 link['priority_date'] if link['priority_kind'] == 'event' else None)
+                                 link['priority_date'] if not wechat and link['priority_kind'] == 'event' else None)
             priority_date = None
             if link['priority_kind'] != 'event':
                 parsed = _api_time(published)
@@ -740,6 +855,9 @@ def _capture(link, actor, stamp, run_id, result):
                 result['skipped'] += 1
             elif status in ('failed', 'extracting') or prior_attempt is not None:
                 state, message = ('model_failed' if status == 'failed' else 'model_uncertain'), '模型失败或请求结果未确认，需人工处理，未自动重试。'
+                result['skipped'] += 1
+            elif wechat and _wechat_prior_payment(db, link['url']):
+                state, message = 'model_uncertain', '同一微信文章 URL 已有模型结果或请求记录；新版本仅保留原文，不自动再次付费。'
                 result['skipped'] += 1
             elif not eligible:
                 state, message = 'history_deferred', '启动前历史原文已保存；不自动付费回填。'
@@ -777,12 +895,14 @@ def _enrich(link_id, document_id, actor, run_id, result):
             return
     with _db() as db:
         db.execute('BEGIN IMMEDIATE')
-        stored = db.execute('''SELECT l.*,d.source_published_date,d.model_status,s.bootstrap_at,r.started_at
+        stored = db.execute('''SELECT l.*,d.source_published_date,d.model_status,s.bootstrap_at,r.started_at,i.kind
             FROM daily_links l JOIN source_documents d ON d.id=l.document_id
             JOIN daily_runs r ON r.id=? LEFT JOIN daily_source_state s
                 ON s.source_id=l.source_id AND s.bootstrap_key=l.definition_key
+            JOIN information_sources i ON i.id=l.source_id
             WHERE l.id=? AND d.id=?''', (run_id, link_id, document_id)).fetchone()
         prior_attempt = db.execute('SELECT status FROM daily_model_attempts WHERE document_id=?', (document_id,)).fetchone()
+        wechat = stored['kind'] in wechat_public.SOURCE_KINDS
         if stored['model_status'] == 'completed':
             db.execute("UPDATE daily_links SET state='done',attempt_run=?,processed_at=COALESCE(processed_at,?),message='' WHERE id=?", (run_id, _now().isoformat(), link_id))
             result['skipped'] += 1
@@ -793,12 +913,22 @@ def _enrich(link_id, document_id, actor, run_id, result):
                        (state, run_id, _now().isoformat(), link_id))
             result['skipped'] += 1
             return
+        if wechat and _wechat_prior_payment(db, stored['url']):
+            db.execute("UPDATE daily_links SET state='model_uncertain',attempt_run=?,processed_at=COALESCE(processed_at,?),message='同一微信文章 URL 已有模型结果或请求记录；不自动再次付费。' WHERE id=?",
+                       (run_id, _now().isoformat(), link_id))
+            result['skipped'] += 1
+            return
         published = stored['source_published_date']
-        if not published and stored['priority_kind'] == 'publication':
+        if wechat:
+            published = wechat_public.published_date({key: document.get(key) for key in
+                ('source_type', 'canonical_url', 'resolved_url', 'raw_date_text', 'raw_content')})
+            if stored['source_published_date'] not in (None, published):
+                published = None
+        if not wechat and not published and stored['priority_kind'] == 'publication':
             published = stored['priority_date']
-        eligible = _eligible(stored['eligible'], published, stored['bootstrap_at'],
+        eligible = _eligible(stored['eligible'] if not wechat or published else False, published, stored['bootstrap_at'],
                              _now(datetime.fromisoformat(stored['started_at'])),
-                             stored['priority_date'] if stored['priority_kind'] == 'event' else None)
+                             stored['priority_date'] if not wechat and stored['priority_kind'] == 'event' else None)
         db.execute('UPDATE daily_links SET eligible=? WHERE id=?', (int(eligible), link_id))
         if not eligible:
             db.execute("UPDATE daily_links SET state='history_deferred',attempt_run=?,processed_at=COALESCE(processed_at,?),message='启动前历史原文已保存；不自动付费回填。' WHERE id=?", (run_id, _now().isoformat(), link_id))
@@ -817,6 +947,8 @@ def _enrich(link_id, document_id, actor, run_id, result):
             # Manual enrichment may have paid after our preliminary eligibility read.
             # Its failed/uncertain history never authorizes an automatic retry.
             raise acquisition.AcquisitionError('原文已有模型尝试或不再适合自动提取；未重复发送请求。', 'model_in_progress', 409)
+        if wechat and _wechat_prior_payment(conn, stored['url']):
+            raise acquisition.AcquisitionError('同一微信文章 URL 已有模型结果或请求记录；未重复发送请求。', 'model_in_progress', 409)
         inserted = conn.execute("INSERT OR IGNORE INTO daily_model_attempts(document_id,run_id,status) VALUES (?,?,'attempted')",
                                 (document_id, run_id)).rowcount
         if not inserted:
@@ -867,7 +999,8 @@ def _backlog(db, source_id, mode='new'):
         FROM daily_links WHERE source_id=? {link_scope} GROUP BY outcome''', (source_id,))}
     source_state = db.execute('SELECT definition_json FROM daily_source_state WHERE source_id=?', (source_id,)).fetchone()
     definition = json.loads(source_state[0]) if source_state else {}
-    page_scope = '' if mode == 'legacy' or definition.get('scan_all_pages') else ' AND history=' + ('1' if mode == 'history' else '0')
+    all_pages = definition.get('scan_all_pages') or definition.get('kind') == 'nju_math_reports'
+    page_scope = '' if mode == 'legacy' or all_pages else ' AND history=' + ('1' if mode == 'history' else '0')
     paused = 0
     columns = {row[1] for row in db.execute('PRAGMA table_info(daily_links)')}
     if definition.get('definition_key') and 'definition_key' in columns:
@@ -938,7 +1071,7 @@ def _run_result(run_id, stamp, results, finished=None, interrupted=False, mode='
 
 
 def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
-    """Keep queues in SQLite; bound web futures independently of two model workers."""
+    """Keep durable queues; bound HTTP, single GUI discovery and two model workers."""
     contexts = deque(contexts)
     today = _now(datetime.fromisoformat(stamp)).date().isoformat()
     deadline = None
@@ -973,6 +1106,7 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
     fetch_workers = runtime.settings.collection_fetch_workers
     limiter = acquisition.PublicFetchLimiter(max_concurrent=fetch_workers)
     web = ThreadPoolExecutor(max_workers=fetch_workers, thread_name_prefix='daily-web')
+    gui = ThreadPoolExecutor(max_workers=1, thread_name_prefix='daily-gui')
     models = ThreadPoolExecutor(max_workers=2, thread_name_prefix='daily-model')
     futures = {}
     hosts = set()
@@ -990,7 +1124,7 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
                     if kind == 'discover':
                         _discover(context['source'], context['definition'], run_id, stamp, page_limit, delta, mode, deadline)
                     else:
-                        _capture(link, actor, stamp, run_id, delta)
+                        _capture(link, context['definition'], actor, stamp, run_id, delta)
         except BaseException as caught:
             # A worker interrupt must reach the coordinator, including its counters.
             error = caught
@@ -1010,12 +1144,34 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
         if kind == 'discover':
             if isinstance(error, Exception):
                 result = context['result']
-                result.update(status='failed', message=_safe_message(error))
                 result['failed'] += 1
-                information.update_source(context['source']['id'], status='failed',
-                                          message=result['message'], last_checked_at=stamp)
-                context['phase'] = 'failed'
-                return None
+                if (context['definition']['kind'] == 'wechat_gui'
+                        and ((isinstance(error, acquisition.AcquisitionError)
+                              and error.code == 'source_verification_required')
+                             or getattr(error, 'verification_required', False))):
+                    for pending in contexts:
+                        if pending['phase'] == 'pending' and pending['definition']['kind'] == 'wechat_gui':
+                            pending['phase'] = 'failed'
+                            pending['result']['failed'] += 1
+                            pending['result'].update(status='failed', message='微信公开桌面等待人工验证；未继续其他公众号发现或队列。')
+                            information.update_source(pending['source']['id'], status='failed',
+                                                      message=pending['result']['message'])
+                if (context['definition']['kind'] == 'wechat_gui'
+                        and delta.get('_identity_verified') is True
+                        and isinstance(error, acquisition.AcquisitionError)
+                        and error.code in ('source_runtime_unavailable', 'source_blocked')
+                        and not getattr(error, 'verification_required', False)):
+                    message = '微信 GUI 发现不可用，存在发现覆盖缺口；仅继续当前定义的已知 URL 队列，未推进成功检查点。 ' + _safe_message(error)
+                    delta.update(status='partial', message=message)
+                    information.update_source(context['source']['id'], enabled=True, status='verified',
+                                              message='公开参考文章发布者身份已验证；GUI 发现不可用。', last_checked_at=stamp)
+                    error = None
+                else:
+                    result.update(status='failed', message=_safe_message(error))
+                    information.update_source(context['source']['id'], status='failed',
+                                              message=result['message'], last_checked_at=stamp)
+                    context['phase'] = 'failed'
+                    return None
             if error is None:
                 for key in ('status', 'message'):
                     if key in delta:
@@ -1054,15 +1210,28 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
                 return link if link is not None and link['state'] == 'ready' and link['id'] not in active_links else None
             # Current refetches detect genuinely changed content, but history is never
             # admitted just because its row was inserted during this run.
+            capture_scope = 'eligible=1'
+            if (context['definition']['kind'] in wechat_public.SOURCE_KINDS
+                    and context.get('raw_wechat_captures', 0) < min(page_limit * 4, 24)):
+                # Discovery proves a public URL, not its publication date. Keep
+                # discovery durable before HTTP, then let verified raw metadata
+                # decide eligibility; an unknown/old date never permits payment.
+                capture_scope = "(eligible=1 OR (eligible=0 AND priority_date IS NULL AND document_id IS NULL))"
+            fresh_wechat = ("CASE WHEN eligible=0 AND priority_date IS NULL AND document_id IS NULL "
+                            "AND NOT (state='pending' AND checked_at IS NULL AND attempt_run IS NULL) "
+                            "THEN 1 ELSE 0 END," if context['definition']['kind'] in wechat_public.SOURCE_KINDS else '')
             return db.execute(f"""SELECT * FROM daily_links WHERE source_id=? AND definition_key=?
-                AND id<=? AND (attempt_run IS NULL OR attempt_run!=?) AND eligible=1
+                AND id<=? AND (attempt_run IS NULL OR attempt_run!=?) AND {capture_scope}
                 AND (state IN ('pending','fetch_failed') OR
                     (last_seen=? AND state IN ('done','model_failed','model_uncertain')))
-                ORDER BY {priority_order},id LIMIT 1""",
+                ORDER BY {fresh_wechat}{priority_order},id LIMIT 1""",
                 (*scope, run_id, stamp, *priority_args)).fetchone()
 
     def submit(kind, context, link=None):
-        host = None if kind == 'model' else urlsplit(
+        gui_discovery = kind == 'discover' and context['definition']['kind'] == 'wechat_gui'
+        # Native GUI waiting holds neither a web worker nor a scheduler host slot.
+        # Its reference HTTP still uses the same request-level limiter in task().
+        host = None if kind == 'model' or gui_discovery else urlsplit(
             context['definition']['url'] if link is None else link['url']).hostname
         if link is not None:
             with _db() as db:
@@ -1073,12 +1242,16 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
                     db.execute('UPDATE daily_source_state SET fetch_count=fetch_count+1 WHERE source_id=?',
                                (context['source']['id'],))
                     context['history'] += 1
+                if (mode == 'new' and kind == 'capture' and not link['eligible']
+                        and context['definition']['kind'] in wechat_public.SOURCE_KINDS):
+                    context['raw_wechat_captures'] = context.get('raw_wechat_captures', 0) + 1
             active_links.add(link['id'])
         if host is not None:
             hosts.add(host)
         if kind == 'discover':
             context['phase'] = 'discovering'
-        future = (models if kind == 'model' else web).submit(task, kind, context, link)
+        executor = models if kind == 'model' else gui if gui_discovery else web
+        future = executor.submit(task, kind, context, link)
         futures[future] = kind, context, link, host
         while contexts[0] is not context:
             contexts.rotate(-1)
@@ -1105,7 +1278,16 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
                     break
                 submit('model', *ready)
                 model_count += 1
-            web_count = len(futures) - model_count
+            gui_active = any(kind == 'discover' and context['definition']['kind'] == 'wechat_gui'
+                             for kind, context, _, _ in futures.values())
+            if not gui_active and (deadline is None or _now() < deadline):
+                pending_gui = min((context for context in contexts
+                                   if context['phase'] == 'pending' and context['definition']['kind'] == 'wechat_gui'),
+                                  key=lambda context: (context['event_hint'] is None, context['event_hint'] or ''),
+                                  default=None)
+                if pending_gui is not None:
+                    submit('discover', pending_gui)
+            web_count = sum(host is not None for _, _, _, host in futures.values())
             while web_count < fetch_workers:
                 if deadline is not None and _now() >= deadline:
                     for context in contexts:
@@ -1114,7 +1296,7 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
                     break
                 choices = []
                 for context in contexts:
-                    if context['phase'] == 'pending':
+                    if context['phase'] == 'pending' and context['definition']['kind'] != 'wechat_gui':
                         choices.append(('discover', context, None, urlsplit(context['definition']['url']).hostname))
                     elif (link := candidate(context)) is not None:
                         choices.append(('capture', context, link, urlsplit(link['url']).hostname))
@@ -1148,6 +1330,7 @@ def _pipeline(contexts, actor, run_id, stamp, page_limit, mode):
             for future in done:
                 complete(future)
         web.shutdown(wait=True, cancel_futures=True)
+        gui.shutdown(wait=True, cancel_futures=True)
         models.shutdown(wait=True, cancel_futures=True)
 
 

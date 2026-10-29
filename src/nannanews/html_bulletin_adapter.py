@@ -18,6 +18,7 @@ MAX_HTML_BYTES = 8 * 1024 * 1024
 BOILERPLATE = re.compile(r'编辑部招聘|订阅|联系我们|消息来源|来源说明|目录|版权|关于我们')
 COLLEGES = re.compile(r'(?:匡亚明|历史|文|哲学|新闻传播|外国语|社会|政府管理|信息管理|经济管理|经济|商|法|数学|物理|化学化工|化学|生命科学|地理与海洋科学|大气科学|环境|地球科学与工程|电子科学与工程|现代工程与应用科学|计算机|人工智能|软件|医|建筑与城市规划|建城|艺术|国际|教育研究|智能科学与技术|集成电路|能源与资源|数字经济与管理)学院')
 DATE_LABEL = re.compile(r'(?P<label>[^：:。；;\n]{0,20}(?:截止(?:时间|日期)?|报名时间|申报时间|活动时间|讲座时间|报告时间|演出时间|比赛时间|会议时间|开展日期|刊载时间|刊载日期|发布时间|发布日期|时间))\s*[：:]\s*(?P<value>[^\n；;]+)')
+TEXT_URL = re.compile(r'''https?://[^\s<>"'“”‘’《》，。；！？]+''', re.I)
 
 
 class HtmlAdapterError(ValueError):
@@ -39,9 +40,19 @@ def _text(node):
 
 
 def _links(node, base):
+    hrefs = [anchor['href'].strip() for anchor in node.find_all('a', href=True)]
+    for text in node.find_all(string=True):
+        # Anchor labels may be shortened or differ from their actual targets.
+        if text.find_parent(['a', 'script', 'style', 'noscript', 'template']):
+            continue
+        for match in TEXT_URL.finditer(str(text)):
+            value = match.group(0).rstrip('.,;:!?')
+            for closing, opening in ((')', '('), (']', '['), ('}', '{'), ('）', '（'), ('】', '【')):
+                while value.endswith(closing) and value.count(closing) > value.count(opening):
+                    value = value[:-1]
+            hrefs.append(value)
     result = []
-    for anchor in node.find_all('a', href=True):
-        href = anchor['href'].strip()
+    for href in hrefs:
         if href.startswith('#'):
             continue
         url = canonical_source_url(urljoin(base, href) if base and href not in {'None', 'null'} else href)
@@ -228,7 +239,8 @@ def parse_html(path, *, source_url=None):
         dates = [date_field(_date_kind(m['label']), m['value'].strip(), m.group(0), locator) for m in DATE_LABEL.finditer(body)]
         section_image_sources = {image.get('src') for image in section.find_all('img')}
         items.append({'local_key': f'section-{heading_index}', 'kind': 'detail', 'title': _text(heading), 'category': category,
-                      'body_text': body, 'source_urls': _links(section, base), 'locator': locator, 'dates': dates,
+                      'body_text': body, 'source_urls': list(dict.fromkeys(_links(heading, base) + _links(section, base))),
+                      'locator': locator, 'dates': dates,
                       'college_mentions': _colleges(_text(heading) + '\n' + body, locator),
                       'image_refs': [image_ids[id(image)] for image in soup.find_all('img')
                                      if image.get('src') in section_image_sources and id(image) in image_ids]})

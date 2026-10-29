@@ -18,6 +18,7 @@ import pytest
 
 from nannanews import acquisition
 from nannanews import daily_acquisition as daily
+from nannanews.acquisition import fetch_public_resource as real_public_fetch
 from nannanews import information
 from nannanews import runtime
 from nannanews import schema as migrations
@@ -2052,7 +2053,7 @@ def test_capture_failure_retaining_old_raw_is_never_relabelled_success(
         db.row_factory = sqlite3.Row
         link = db.execute('SELECT * FROM daily_links').fetchone()
     result = {'failed': 0}
-    daily._capture(link, 'system:daily', failure_now.isoformat(), 6, result)
+    daily._capture(link, {'kind': 'html'}, 'system:daily', failure_now.isoformat(), 6, result)
     assert result['failed'] == 1
     with closing(runtime.connect_db()) as db:
         assert db.execute('''SELECT state,document_id,checked_at,processed_at,message FROM daily_links''').fetchone() == (
@@ -2306,3 +2307,1253 @@ def test_source_attempt_history_is_rechecked_atomically_even_when_document_state
         assert db.execute('SELECT * FROM source_document_model_attempts WHERE document_id=?',
                           (protected['document_id'],)).fetchall() == protected['attempts']
         assert db.execute('SELECT state FROM daily_links').fetchall() == [('model_uncertain',)]
+
+
+MATH_ROOT = 'https://math.nju.edu.cn/njdx/front/sxxx/reports.do?channelId=16410&pageSize=10&currentPage=1'
+
+
+@pytest.fixture
+def math_environment(environment):
+    daily.SEED_PATH.write_text(json.dumps([{
+        'id': 'math-reports', 'name': '数学学院近期报告', 'url': MATH_ROOT,
+        'identity_url': 'https://math.nju.edu.cn/', 'expected_identity': '南京大学数学学院',
+        'publisher_college': '数学学院', 'kind': 'nju_math_reports', 'enabled': True,
+        'article_pattern': r'^/xsbg/jrbg/[0-9]{8}/i[0-9]+\.html$'
+    }]), encoding='utf-8')
+    environment.put('https://math.nju.edu.cn/', '<html><title>南京大学数学学院</title></html>')
+    return environment
+
+
+def put_math_pages(boundary, pages):
+    for number, identities in enumerate(pages, start=1):
+        records = []
+        for identity in identities:
+            path = f'/xsbg/jrbg/20261001/i{identity}.html'
+            records.append({'iid': identity, 'title': f'公开数学报告{identity}',
+                            'url': 'http://math.nju.edu.cn' + path,
+                            'releasetime': '2026-10-01 11:06:39',
+                            'field_8925': '2026-10-16 14:30:00'})
+            boundary.put('https://math.nju.edu.cn' + path, article(identity, published='2026-10-01'))
+        boundary.put(MATH_ROOT.replace('currentPage=1', f'currentPage={number}'),
+                     json.dumps({'reports': records, 'pages': len(pages), 'pageSize': 10,
+                                 'currentPage': number, 'channelId': 16410}),
+                     'text/html; charset=utf-8')
+
+
+def test_math_event_sorted_pages_discover_new_reports_beyond_known_root(math_environment):
+    put_math_pages(math_environment, [[423001], [423002]])
+    first = daily.run_once(now=NOW, mode='new')['sources'][0]
+    assert first['extracted'] == 2
+    put_math_pages(math_environment, [[423001], [423003, 423002]])
+    second = daily.run_once(now=NOW + timedelta(days=1), mode='new')['sources'][0]
+    assert second['discovered'] == second['extracted'] == 1
+    assert len(math_environment.posts) == 3
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT source_published_date FROM source_documents ORDER BY id').fetchall() == [
+            ('2026-10-01',), ('2026-10-01',), ('2026-10-01',)]
+        assert db.execute('SELECT priority_kind,priority_date,eligible,state FROM daily_links ORDER BY url').fetchall() == [
+            ('event', '2026-10-16T14:30:00+08:00', 1, 'done'),
+            ('event', '2026-10-16T14:30:00+08:00', 1, 'done'),
+            ('event', '2026-10-16T14:30:00+08:00', 1, 'done')]
+    records = information.query_records({})['records']
+    assert {record['source_url'] for record in records} == {
+        f'https://math.nju.edu.cn/xsbg/jrbg/20261001/i{identity}.html'
+        for identity in (423001, 423002, 423003)}
+
+
+def test_math_listing_budget_resumes_remaining_pages_without_publication_cutoff(math_environment):
+    put_math_pages(math_environment, [[], [], [423009]])
+    first = daily.run_once(now=NOW, mode='new')['sources'][0]
+    assert first['discovered'] == 0 and first['pending_pages'] == 1
+    assert MATH_ROOT.replace('currentPage=1', 'currentPage=3') not in math_environment.fetches
+    second = daily.run_once(now=NOW + timedelta(minutes=1), mode='new')['sources'][0]
+    assert second['discovered'] == second['extracted'] == 1
+    assert information.query_records({})['records'][0]['source_published_date'] == '2026-10-01'
+
+
+@pytest.mark.parametrize('change', [
+    {'channelId': 1}, {'currentPage': 2}, {'pages': -1},
+    {'reports': [{'url': 'https://foreign.example/xsbg/jrbg/20261001/i423009.html'}]},
+])
+def test_math_listing_identity_and_page_failures_never_fetch_articles_or_bill(math_environment, change):
+    data = {'reports': [], 'pages': 1, 'pageSize': 10, 'currentPage': 1, 'channelId': 16410}
+    math_environment.put(MATH_ROOT, json.dumps(data | change), 'text/html')
+    result = daily.run_once(now=NOW, mode='new')['sources'][0]
+    assert result['status'] == 'failed' and result['discovered'] == 0
+    assert result['last_success_at'] is None
+    assert math_environment.posts == []
+    assert not any('/xsbg/' in url for url in math_environment.fetches)
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+
+
+WECHAT_REFERENCE = 'https://mp.weixin.qq.com/s/publisher-reference'
+WECHAT_ARTICLES = [f'https://mp.weixin.qq.com/s/public-article-{index}' for index in range(1, 4)]
+WECHAT_BIZ = 'MzAxODAzMjQ1NQ=='
+
+
+def wechat_article(version='原始公开正文', published='2026-10-14', biz=WECHAT_BIZ):
+    metadata = f'<em id="publish_time">{published}</em>' if published else ''
+    return ('<html><head><title>南京大学公开通知</title></head><body>'
+            '<h1 id="activity-name">南京大学公开通知</h1>' + metadata +
+            '<div id="js_content"><p>' + version + '。公开校园活动的完整正文，'
+            '只保留原文已明确的证据，不推测活动日期或发布者。</p></div>'
+            '<script>var biz = "' + biz + '";</script></body></html>')
+
+
+@pytest.fixture
+def wechat_environment(environment, monkeypatch):
+    from nannanews import wechat_desktop
+
+    daily.SEED_PATH.write_text(json.dumps([{
+        'id': 'test-college', 'name': '南京大学公众号', 'url': WECHAT_REFERENCE,
+        'identity_url': WECHAT_REFERENCE, 'expected_identity': '南京大学',
+        'wechat_biz': WECHAT_BIZ, 'kind': 'wechat_gui', 'enabled': True
+    }]), encoding='utf-8')
+    environment.put(WECHAT_REFERENCE, wechat_article('发布者身份参考文章', '2025-01-01'))
+    for url in WECHAT_ARTICLES:
+        environment.put(url, wechat_article())
+    snapshot = {'links': [{'url': WECHAT_ARTICLES[0], 'published_date': NOW.date().isoformat(),
+                           'disallowed': False}], 'complete': True, 'message': ''}
+    calls = []
+
+    def discover(definition, *, page_limit, deadline=None):
+        calls.append((dict(definition), page_limit, deadline))
+        return snapshot
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+    return SimpleNamespace(boundary=environment, snapshot=snapshot, calls=calls)
+
+
+@pytest.fixture
+def parallel_wechat_environment(environment, monkeypatch):
+    from nannanews import wechat_desktop
+
+    configure_parallel_sources(environment, [('z-web', 'ordinary.nju.edu.cn')])
+    definitions = json.loads(daily.SEED_PATH.read_text(encoding='utf-8'))
+    gui_definitions, snapshots, calls = [], {}, []
+    for index, source_id in enumerate(('a-gui', 'b-gui', 'c-gui')):
+        reference = f'https://mp.weixin.qq.com/s/{source_id}-reference'
+        url = f'https://mp.weixin.qq.com/s/{source_id}-article'
+        biz = base64.b64encode(str(3000000000 + index).encode()).decode('ascii')
+        definition = {'id': source_id, 'name': source_id, 'url': reference, 'kind': 'wechat_gui',
+                      'identity_url': reference, 'expected_identity': '南京大学',
+                      'wechat_biz': biz, 'enabled': True}
+        gui_definitions.append(definition)
+        environment.put(reference, wechat_article('公开发布者参考文章', '2025-01-01', biz))
+        environment.put(url, wechat_article(source_id + '的公开通知', biz=biz))
+        snapshots[source_id] = {'links': [{'url': url, 'published_date': NOW.date().isoformat(),
+                                         'disallowed': False}], 'complete': True, 'message': ''}
+    daily.SEED_PATH.write_text(json.dumps(gui_definitions + definitions), encoding='utf-8')
+
+    def discover(definition, *, page_limit, deadline=None):
+        calls.append(definition['id'])
+        return snapshots[definition['id']]
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+    return SimpleNamespace(boundary=environment, definitions=gui_definitions, snapshots=snapshots, calls=calls)
+
+
+@pytest.mark.parametrize('fetch_workers', [1, 6])
+def test_gui_accounts_serialize_without_blocking_http_or_ordinary_publishers(
+        parallel_wechat_environment, monkeypatch, fetch_workers):
+    from nannanews import wechat_desktop
+
+    gui = parallel_wechat_environment
+    monkeypatch.setattr(runtime, 'settings', replace(runtime.settings, collection_fetch_workers=fetch_workers))
+    first_entered, second_entered = Event(), Event()
+    release_first, release_second = Event(), Event()
+    web_committed, first_committed = Event(), Event()
+    lock = Lock()
+    actions = {'active': 0, 'peak': 0}
+    submissions = {'peak': 0, 'total': 0}
+    gui_futures = []
+    enrich = information.enrich_document
+    executor_submit = daily.ThreadPoolExecutor.submit
+
+    def observe_submit(executor, function, *args, **kwargs):
+        is_gui = (len(args) >= 2 and args[0] == 'discover'
+                  and args[1]['definition']['kind'] == 'wechat_gui')
+        if is_gui:
+            with lock:
+                submissions['total'] += 1
+                outstanding = sum(not future.done() for future in gui_futures)
+                submissions['peak'] = max(submissions['peak'], outstanding + 1)
+        future = executor_submit(executor, function, *args, **kwargs)
+        if is_gui:
+            with lock:
+                gui_futures.append(future)
+        return future
+
+    def discover(definition, *, page_limit, deadline=None):
+        with lock:
+            gui.calls.append(definition['id'])
+            ordinal = len(gui.calls)
+            actions['active'] += 1
+            actions['peak'] = max(actions['peak'], actions['active'])
+        try:
+            if ordinal == 1:
+                first_entered.set()
+                assert release_first.wait(10)
+            elif ordinal == 2:
+                second_entered.set()
+                assert release_second.wait(10)
+            return gui.snapshots[definition['id']]
+        finally:
+            with lock:
+                actions['active'] -= 1
+
+    def observe_commit(document_id, actor, **kwargs):
+        result = enrich(document_id, actor, **kwargs)
+        source_id = information.get_document(document_id)['source_id']
+        if source_id == 'z-web':
+            web_committed.set()
+        elif source_id == 'a-gui':
+            first_committed.set()
+        return result
+
+    monkeypatch.setattr(daily.ThreadPoolExecutor, 'submit', observe_submit)
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+    monkeypatch.setattr(information, 'enrich_document', observe_commit)
+    with background_collection(release_first, release_second) as (outcome, thread):
+        assert first_entered.wait(10)
+        assert web_committed.wait(10), 'ordinary publisher waited for native GUI discovery'
+        release_first.set()
+        assert second_entered.wait(10)
+        assert first_committed.wait(10), 'ready WeChat HTTP/model work waited for another account GUI'
+        with lock:
+            assert actions == {'active': 1, 'peak': 1}
+            assert submissions == {'peak': 1, 'total': 2}
+            assert sum(not future.done() for future in gui_futures) == 1
+            assert gui.calls == ['a-gui', 'b-gui']
+        assert gui.definitions[2]['url'] not in gui.boundary.fetches
+        assert thread.is_alive()
+    assert 'error' not in outcome
+    assert actions == {'active': 0, 'peak': 1}
+    assert submissions == {'peak': 1, 'total': 3}
+    assert all(future.done() for future in gui_futures)
+    assert gui.calls == ['a-gui', 'b-gui', 'c-gui']
+    assert len(gui.boundary.posts) == 4
+    for source in information.list_sources():
+        definition = daily._definition(source)
+        with closing(runtime.connect_db()) as db:
+            rows = db.execute('''SELECT l.definition_key,l.state,d.source_id FROM daily_links l
+                JOIN source_documents d ON d.id=l.document_id WHERE l.source_id=?''', (source['id'],)).fetchall()
+        assert rows == [(definition['definition_key'], 'done', source['id'])]
+
+
+@pytest.mark.parametrize('mismatch', ['reference', 'capture'])
+def test_gui_lane_publisher_failure_does_not_cross_account_boundaries(
+        parallel_wechat_environment, mismatch):
+    gui = parallel_wechat_environment
+    failed = gui.definitions[1]
+    url = failed['url'] if mismatch == 'reference' else gui.snapshots[failed['id']]['links'][0]['url']
+    gui.boundary.put(url, wechat_article(biz=gui.definitions[0]['wechat_biz']))
+    result = daily.run_once(now=NOW, mode='new')
+    sources = {source['source_id']: source for source in result['sources']}
+    assert sources[failed['id']]['status'] == ('failed' if mismatch == 'reference' else 'partial')
+    assert sources[failed['id']]['extracted'] == 0
+    assert sources[failed['id']]['last_success_at'] is None
+    assert all(sources[source_id]['extracted'] == 1 for source_id in ('a-gui', 'c-gui', 'z-web'))
+    assert (failed['id'] in gui.calls) == (mismatch == 'capture')
+    assert len(gui.boundary.posts) == 3
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM source_documents WHERE source_id=?', (failed['id'],)).fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 3
+
+
+@pytest.mark.parametrize('halt_kind', ['partial_snapshot', 'typed_error', 'flagged_error'])
+def test_gui_manual_challenge_retains_urls_but_blocks_its_queue_and_later_accounts(
+        parallel_wechat_environment, monkeypatch, halt_kind):
+    from nannanews import wechat_desktop
+
+    gui = parallel_wechat_environment
+    daily.initialize_sources()
+    for source in information.list_sources():
+        definition = daily._definition(source)
+        if definition['kind'] != 'wechat_gui':
+            continue
+        url = f"https://mp.weixin.qq.com/s/{source['id']}-queued"
+        gui.boundary.put(url, wechat_article('之前已经发现的公开原文', biz=definition['wechat_biz']))
+        with closing(runtime.connect_db()) as db, db:
+            db.execute('''INSERT INTO daily_links(source_id,url,state,eligible,first_seen,last_seen,definition_key)
+                VALUES (?,?,'pending',1,?,?,?)''',
+                (source['id'], url, NOW.isoformat(), NOW.isoformat(), definition['definition_key']))
+
+    def discover(definition, *, page_limit, deadline=None):
+        gui.calls.append(definition['id'])
+        if halt_kind == 'partial_snapshot':
+            return dict(gui.snapshots[definition['id']], complete=False,
+                        verification_required=True, message='公开桌面需要人工验证。')
+        error = acquisition.AcquisitionError('公开桌面需要人工验证。',
+            'source_verification_required' if halt_kind == 'typed_error' else 'source_blocked')
+        if halt_kind == 'flagged_error':
+            error.verification_required = True
+        raise error
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+    run = daily.run_once(now=NOW, mode='new')
+    assert gui.calls == ['a-gui']
+    assert all(definition['url'] not in gui.boundary.fetches for definition in gui.definitions[1:])
+    sources = {source['source_id']: source for source in run['sources']}
+    assert sources['z-web']['extracted'] == 1
+    for definition in gui.definitions:
+        source = sources[definition['id']]
+        assert source['status'] == 'failed' and source['last_success_at'] is None
+        assert source['fetched'] == source['extracted'] == 0
+    assert sources['a-gui']['discovered'] == int(halt_kind == 'partial_snapshot')
+    with closing(runtime.connect_db()) as db:
+        rows = db.execute("SELECT state,attempt_run,document_id FROM daily_links WHERE source_id!='z-web'").fetchall()
+        assert rows == [('pending', None, None)] * (3 + int(halt_kind == 'partial_snapshot'))
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM source_documents WHERE source_id!='z-web'").fetchone()[0] == 0
+        assert db.execute("SELECT state FROM daily_pages WHERE source_id='a-gui'").fetchone()[0] == 'pending'
+    assert len(gui.boundary.posts) == 1
+
+
+@pytest.mark.parametrize('interrupt_at', ['gui', 'web'])
+def test_gui_lane_interrupt_drains_native_and_paid_work_before_unlock(
+        parallel_wechat_environment, monkeypatch, interrupt_at):
+    from nannanews import wechat_desktop
+
+    gui = parallel_wechat_environment
+    gui_entered, paid_entered, interrupted = Event(), Event(), Event()
+    release_gui, release_paid = Event(), Event()
+    fetch = gui.boundary.fetch
+    first_url = gui.snapshots['a-gui']['links'][0]['url']
+
+    def discover(definition, *, page_limit, deadline=None):
+        gui.calls.append(definition['id'])
+        if definition['id'] == 'b-gui':
+            gui_entered.set()
+            assert paid_entered.wait(10)
+            if interrupt_at == 'gui':
+                interrupted.set()
+                raise KeyboardInterrupt()
+            assert release_gui.wait(10)
+        return gui.snapshots[definition['id']]
+
+    def public_fetch(url, **kwargs):
+        if url == 'https://ordinary.nju.edu.cn/info/1001/1.htm':
+            assert gui_entered.wait(10)
+            assert paid_entered.wait(10)
+            if interrupt_at == 'web':
+                interrupted.set()
+                raise KeyboardInterrupt()
+        return fetch(url, **kwargs)
+
+    def paid_post(payload, *, audit=None):
+        source = json.loads(payload['input'][0]['content'][0]['text'].split('\n', 1)[1])
+        if source['canonical_url'] == first_url:
+            paid_entered.set()
+            assert release_paid.wait(10)
+        return gui.boundary.model(payload)
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', public_fetch)
+    monkeypatch.setattr(acquisition, '_model_post', paid_post)
+    with background_collection(release_gui, release_paid) as (outcome, thread):
+        assert interrupted.wait(10)
+        assert thread.is_alive() and 'error' not in outcome
+        with closing(runtime.connect_db()) as db:
+            assert db.execute('SELECT status FROM daily_runs').fetchone()[0] == 'running'
+            assert db.execute('''SELECT a.status FROM daily_model_attempts a
+                JOIN source_documents d ON d.id=a.document_id WHERE d.source_url=?''', (first_url,)).fetchall() == [('attempted',)]
+        with pytest.raises(RuntimeError, match='already running'):
+            with daily._collection_lock():
+                pytest.fail('collection unlocked while GUI or paid work was still active')
+    assert isinstance(outcome.get('error'), KeyboardInterrupt)
+    assert gui.calls == ['a-gui', 'b-gui']
+    assert gui.definitions[2]['url'] not in gui.boundary.fetches
+    assert not any(thread.name.startswith(('daily-web', 'daily-gui', 'daily-model')) for thread in running_threads())
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT status FROM daily_runs').fetchone()[0] == 'interrupted'
+        assert db.execute("SELECT model_status FROM source_documents WHERE source_url=?", (first_url,)).fetchone()[0] == 'completed'
+        assert db.execute('''SELECT a.status FROM daily_model_attempts a JOIN source_documents d ON d.id=a.document_id
+            WHERE d.source_url=?''', (first_url,)).fetchall() == [('done',)]
+        assert db.execute("SELECT COUNT(*) FROM daily_links WHERE state IN ('fetching','modelling')").fetchone()[0] == 0
+    with daily._collection_lock():
+        pass
+    monkeypatch.setattr(wechat_desktop, 'discover_articles',
+                        lambda definition, **kwargs: gui.snapshots[definition['id']])
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', gui.boundary.fetch)
+    monkeypatch.setattr(acquisition, '_model_post', gui.boundary.model)
+    daily.run_once(now=NOW + timedelta(days=1), mode='new')
+    paid_urls = [json.loads(payload['input'][0]['content'][0]['text'].split('\n', 1)[1])['canonical_url']
+                 for payload in gui.boundary.posts]
+    assert paid_urls.count(first_url) == 1
+
+
+def test_gui_history_deadline_drains_current_discovery_without_submitting_next_account(
+        parallel_wechat_environment, monkeypatch):
+    from nannanews import wechat_desktop
+
+    gui = parallel_wechat_environment
+    slot = NOW.replace(hour=4) + timedelta(days=1)
+    clock = [slot - timedelta(minutes=6)]
+    original_now = daily._now
+    monkeypatch.setattr(daily, '_now', lambda value=None: original_now(value if value is not None else clock[0]))
+    entered, release = Event(), Event()
+
+    def discover(definition, *, page_limit, deadline=None):
+        assert deadline == slot - timedelta(minutes=5)
+        gui.calls.append(definition['id'])
+        clock[0] = slot - timedelta(minutes=4)
+        entered.set()
+        assert release.wait(10)
+        return gui.snapshots[definition['id']]
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+    with background_collection(release, now=clock[0], mode='history') as (outcome, thread):
+        assert entered.wait(10)
+        assert thread.is_alive()
+        with pytest.raises(RuntimeError, match='already running'):
+            with daily._collection_lock():
+                pytest.fail('history unlocked before its GUI discovery drained')
+    assert 'error' not in outcome
+    assert outcome['result']['status'] == 'partial'
+    assert gui.calls == ['a-gui']
+    assert all(definition['url'] not in gui.boundary.fetches for definition in gui.definitions[1:])
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute("SELECT COUNT(*) FROM daily_links WHERE source_id='a-gui' AND document_id IS NULL").fetchone()[0] == 1
+
+
+
+@pytest.mark.parametrize('fetch_workers', [1, 6])
+def test_gui_reference_and_web_requests_share_global_and_per_host_limits(
+        parallel_wechat_environment, monkeypatch, fetch_workers):
+    gui = parallel_wechat_environment
+    monkeypatch.setattr(runtime, 'settings', replace(runtime.settings, collection_fetch_workers=fetch_workers))
+    configure_parallel_sources(gui.boundary, [(f'web{index}', f'web{index}.nju.edu.cn') for index in range(6)])
+    web_definitions = json.loads(daily.SEED_PATH.read_text(encoding='utf-8'))
+    daily.SEED_PATH.write_text(json.dumps(gui.definitions + web_definitions), encoding='utf-8')
+    release, contended, full = Event(), Event(), Event()
+    lock = Lock()
+    requests = {'active': 0, 'peak': 0, 'attempted': 0}
+    active_hosts, peak_hosts, limiters = {}, {}, set()
+    slot = acquisition.PublicFetchLimiter._slot
+
+    @contextmanager
+    def observe_slot(limiter, hostname, deadline):
+        with lock:
+            requests['attempted'] += 1
+            limiters.add(limiter)
+            if requests['attempted'] >= fetch_workers + 1:
+                contended.set()
+        with slot(limiter, hostname, deadline):
+            yield
+
+    class PublicResponse:
+        status = 200
+
+        def __init__(self, url):
+            self.body, self.mime, _ = gui.boundary.fetch(url)
+            self.offset = 0
+
+        def getheader(self, name, default=None):
+            return {'Content-Type': self.mime, 'Content-Length': str(len(self.body))}.get(name, default)
+
+        def read1(self, size):
+            chunk = self.body[self.offset:self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+        def close(self):
+            pass
+
+    class PublicConnection:
+        sock = None
+
+        def __init__(self, host, port, address, timeout):
+            self.host, self.closed = host, False
+            with lock:
+                requests['active'] += 1
+                requests['peak'] = max(requests['peak'], requests['active'])
+                active_hosts[host] = active_hosts.get(host, 0) + 1
+                peak_hosts[host] = max(peak_hosts.get(host, 0), active_hosts[host])
+                if requests['active'] >= fetch_workers:
+                    full.set()
+
+        def request(self, method, path, headers=None):
+            self.url = f'https://{self.host}{path}'
+            assert release.wait(10)
+
+        def getresponse(self):
+            return PublicResponse(self.url)
+
+        def close(self):
+            if not self.closed:
+                self.closed = True
+                with lock:
+                    requests['active'] -= 1
+                    active_hosts[self.host] -= 1
+
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', real_public_fetch)
+    monkeypatch.setattr(acquisition, 'getproxies_environment', lambda: {})
+    monkeypatch.setattr(acquisition, '_public_addresses', lambda *args: ['93.184.216.34'])
+    monkeypatch.setattr(acquisition, '_PinnedHTTPS', PublicConnection)
+    monkeypatch.setattr(acquisition.PublicFetchLimiter, '_slot', observe_slot)
+    with background_collection(release) as (outcome, _):
+        assert contended.wait(10), 'GUI and HTTP lanes did not contend for the shared request budget'
+        assert full.wait(10)
+        with lock:
+            assert len(limiters) == 1
+            assert requests['active'] == requests['peak'] == fetch_workers
+    assert 'error' not in outcome
+    assert requests['active'] == 0 and requests['peak'] == fetch_workers
+    assert peak_hosts['mp.weixin.qq.com'] == 1
+    assert all(peak == 1 for peak in peak_hosts.values())
+    assert len(gui.boundary.posts) == 9
+
+
+def test_gui_bounded_snapshot_keeps_partial_and_real_queue_provenance(wechat_environment):
+    gui = wechat_environment
+    old = '2025-01-01'
+    gui.snapshot.update(complete=False, message='公开时间线仍有未检查内容。', links=[
+        {'url': url, 'published_date': published, 'disallowed': False}
+        for url, published in zip(WECHAT_ARTICLES, [NOW.date().isoformat(), old, None])])
+    gui.boundary.put(WECHAT_ARTICLES[1], wechat_article('历史文章正文', old))
+    gui.boundary.put(WECHAT_ARTICLES[2], wechat_article('未说明发布日期的置顶正文', None))
+    run = daily.run_once(now=NOW, mode='new')
+    result = source_result(run)
+    assert run['status'] == result['status'] == 'partial'
+    assert result['last_success_at'] is None
+    assert result['discovered'] == 3 and result['extracted'] == 1
+    assert len(gui.boundary.posts) == 1
+    assert result['fetched'] == 2
+    with closing(runtime.connect_db()) as db:
+        rows = db.execute('''SELECT url,state,eligible,first_seen,last_seen,priority_date,attempt_run
+            FROM daily_links ORDER BY url''').fetchall()
+        assert rows == [
+            (WECHAT_ARTICLES[0], 'done', 1, NOW.isoformat(), NOW.isoformat(), NOW.date().isoformat(), run['id']),
+            (WECHAT_ARTICLES[1], 'pending', 0, NOW.isoformat(), NOW.isoformat(), old, None),
+            (WECHAT_ARTICLES[2], 'history_deferred', 0, NOW.isoformat(), NOW.isoformat(), None, run['id'])]
+        assert db.execute('SELECT url,state,checked_at FROM daily_pages').fetchall() == [
+            (WECHAT_REFERENCE, 'done', NOW.isoformat())]
+        assert db.execute('SELECT bootstrap_at,last_success_at FROM daily_source_state').fetchone() == (
+            NOW.isoformat(), None)
+        document_id = db.execute('SELECT id FROM source_documents WHERE source_url=?', (WECHAT_ARTICLES[0],)).fetchone()[0]
+    document = information.get_document(document_id)
+    assert document['source_type'] == 'wechat' and document['capture_complete'] is True
+    assert document['raw_content'] == wechat_article()
+    assert document['source_id'] == 'test-college'
+    assert all(record['verification_status'] != 'approved' for record in information.query_records({})['records'])
+
+    # A bounded archive pass retains one article per run without paying for old or
+    # undated pinned content; an incomplete snapshot never advances success.
+    for offset, fetched in ((1, 1), (2, 0)):
+        result = source_result(daily.run_once(now=NOW + timedelta(days=offset), mode='history'))
+        assert result['status'] == 'partial' and result['last_success_at'] is None
+        assert result['fetched'] == fetched and result['extracted'] == 0
+    assert len(gui.boundary.posts) == 1
+    with closing(runtime.connect_db()) as db:
+        retained = db.execute('''SELECT l.url,l.state,l.eligible,l.first_seen,l.document_id,d.source_published_date
+            FROM daily_links l JOIN source_documents d ON d.id=l.document_id
+            WHERE l.eligible=0 ORDER BY l.url''').fetchall()
+        assert [(row[0], row[1], row[2], row[3], row[5]) for row in retained] == [
+            (WECHAT_ARTICLES[1], 'history_deferred', 0, NOW.isoformat(), old),
+            (WECHAT_ARTICLES[2], 'history_deferred', 0, NOW.isoformat(), None)]
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 1
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 1
+    daily.run_once(now=NOW + timedelta(days=3), mode='new')
+    assert len(gui.boundary.posts) == 1
+
+
+@pytest.mark.parametrize('mismatch', ['reference', 'capture'])
+def test_gui_reference_and_each_http_capture_require_matching_public_biz(wechat_environment, mismatch):
+    gui = wechat_environment
+    url = WECHAT_REFERENCE if mismatch == 'reference' else WECHAT_ARTICLES[0]
+    gui.boundary.put(url, wechat_article(biz='MzAxODAzMjQ1Ng=='))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['status'] == ('failed' if mismatch == 'reference' else 'partial')
+    assert result['last_success_at'] is None and result['extracted'] == 0
+    assert len(gui.calls) == (0 if mismatch == 'reference' else 1)
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+        if mismatch == 'capture':
+            assert db.execute('SELECT state,document_id FROM daily_links').fetchall() == [('fetch_failed', None)]
+
+@pytest.fixture
+def queued_wechat_history(wechat_environment):
+    gui = wechat_environment
+    gui.snapshot['links'] = [
+        {'url': url, 'published_date': '2025-01-01', 'disallowed': False}
+        for url in WECHAT_ARTICLES[:2]]
+    for url in WECHAT_ARTICLES[:2]:
+        gui.boundary.put(url, wechat_article('已发现的历史原文', '2025-01-01'))
+    first = daily.run_once(now=NOW, mode='history')
+    result = source_result(first)
+    assert first['status'] == result['status'] == 'partial'
+    assert result['discovered'] == 2 and result['fetched'] == 1
+    assert result['extracted'] == 0 and result['pending'] == 1
+    with closing(runtime.connect_db()) as db:
+        gui.first_document = db.execute('SELECT id FROM source_documents').fetchone()[0]
+        gui.queue_provenance = db.execute('''SELECT id,url,definition_key,first_seen,last_seen
+            FROM daily_links ORDER BY id''').fetchall()
+        gui.pending_url = db.execute("SELECT url FROM daily_links WHERE state='pending'").fetchone()[0]
+    gui.first_run = first
+    gui.boundary.fetches.clear()
+    return gui
+
+
+def fail_gui_discovery(monkeypatch, error):
+    from nannanews import wechat_desktop
+
+    def discover(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', discover)
+
+
+@pytest.mark.parametrize('error_code', ['source_runtime_unavailable', 'source_blocked'])
+def test_gui_offline_history_continues_known_raw_queue_without_success_checkpoint(
+        queued_wechat_history, monkeypatch, error_code):
+    gui = queued_wechat_history
+    fail_gui_discovery(monkeypatch, acquisition.AcquisitionError('专用公开桌面暂时不可用。', error_code))
+    clock = NOW + timedelta(days=1)
+    run = daily.run_once(now=clock, mode='history')
+    result = source_result(run)
+    assert run['status'] == result['status'] == 'partial'
+    assert result['discovered'] == result['extracted'] == result['pending'] == 0
+    assert result['fetched'] == result['failed'] == 1 and result['last_success_at'] is None
+    assert run['coverage_gaps'] and '_identity_verified' not in json.dumps(run)
+    assert gui.boundary.fetches == [WECHAT_REFERENCE, gui.pending_url]
+    assert gui.boundary.posts == []
+    source = information.list_sources()[0]
+    assert source['enabled'] and source['status'] == 'verified' and source['last_success_at'] is None
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('''SELECT id,url,definition_key,first_seen,last_seen
+            FROM daily_links ORDER BY id''').fetchall() == gui.queue_provenance
+        assert db.execute('SELECT bootstrap_at,last_success_at,history_success_at FROM daily_source_state').fetchone() == (
+            NOW.isoformat(), None, None)
+        assert db.execute('SELECT url,state,checked_at,attempt_run FROM daily_pages').fetchone() == (
+            WECHAT_REFERENCE, 'pending', NOW.isoformat(), run['id'])
+        assert db.execute('SELECT attempt_run FROM daily_links WHERE document_id=?',
+                          (gui.first_document,)).fetchone() == (gui.first_run['id'],)
+        document_id, attempt_run = db.execute('SELECT document_id,attempt_run FROM daily_links WHERE url=?',
+                                              (gui.pending_url,)).fetchone()
+        assert attempt_run == run['id']
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+    document = information.get_document(document_id)
+    assert document['source_type'] == 'wechat' and document['source_id'] == 'test-college'
+    assert document['canonical_url'] == gui.pending_url and document['capture_complete'] is True
+    assert document['raw_content'] == wechat_article('已发现的历史原文', '2025-01-01')
+    assert document['model_status'] == 'not_extracted'
+    gui.boundary.fetches.clear()
+    again = source_result(daily.run_once(now=clock + timedelta(minutes=1), mode='history'))
+    assert again['status'] == 'partial' and again['fetched'] == 0 and again['last_success_at'] is None
+    assert gui.boundary.fetches == [WECHAT_REFERENCE]
+
+
+@pytest.mark.parametrize('failure', ['reference_http', 'reference_runtime', 'reference_identity', 'reference_captcha',
+                                     'gui_captcha', 'unknown_code', 'unexpected_error', 'verification_flag'])
+def test_gui_offline_queue_stays_blocked_without_fresh_identity_or_on_verification(
+        queued_wechat_history, monkeypatch, failure):
+    gui = queued_wechat_history
+    error = acquisition.AcquisitionError('专用公开桌面暂时不可用。', 'source_blocked')
+    if failure in ('reference_http', 'reference_runtime', 'reference_captcha'):
+        code = {'reference_http': 'source_blocked', 'reference_runtime': 'source_runtime_unavailable',
+                'reference_captcha': 'source_verification_required'}[failure]
+        gui.boundary.resources[WECHAT_REFERENCE] = acquisition.AcquisitionError('身份参考文章不可验证。', code)
+    elif failure == 'reference_identity':
+        gui.boundary.put(WECHAT_REFERENCE, wechat_article(biz='MzAxODAzMjQ1Ng=='))
+    elif failure == 'gui_captcha':
+        error = acquisition.AcquisitionError('请完成人工验证；不自动处理。', 'source_verification_required')
+    elif failure == 'unknown_code':
+        error = acquisition.AcquisitionError('公开界面发生其他错误。', 'source_empty')
+    elif failure == 'unexpected_error':
+        error = RuntimeError('unexpected GUI failure')
+        error.code = 'source_blocked'
+    elif failure == 'verification_flag':
+        error.verification_required = True
+    fail_gui_discovery(monkeypatch, error)
+    run = daily.run_once(now=NOW + timedelta(days=1), mode='history')
+    result = source_result(run)
+    assert run['status'] == result['status'] == 'failed'
+    assert result['discovered'] == result['fetched'] == result['extracted'] == 0
+    assert result['pending'] == result['failed'] == 1 and result['last_success_at'] is None
+    assert gui.boundary.fetches == [WECHAT_REFERENCE] and gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('''SELECT id,url,definition_key,first_seen,last_seen
+            FROM daily_links ORDER BY id''').fetchall() == gui.queue_provenance
+        assert db.execute("SELECT attempt_run FROM daily_links WHERE state='pending'").fetchone() == (None,)
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 1
+        assert db.execute('SELECT last_success_at,history_success_at FROM daily_source_state').fetchone() == (None, None)
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+
+
+def test_gui_offline_queue_never_crosses_replaced_definition(queued_wechat_history, monkeypatch):
+    gui = queued_wechat_history
+    private = runtime.settings.data_dir / 'automation_sources.json'
+    definitions = json.loads(private.read_text(encoding='utf-8'))
+    definitions[0]['wechat_biz'] = 'MzAxODAzMjQ1Ng=='
+    private.write_text(json.dumps(definitions), encoding='utf-8')
+    gui.boundary.put(WECHAT_REFERENCE, wechat_article(biz=definitions[0]['wechat_biz']))
+    fail_gui_discovery(monkeypatch, acquisition.AcquisitionError('专用桌面不可用。', 'source_runtime_unavailable'))
+    result = source_result(daily.run_once(now=NOW + timedelta(days=1), mode='history'))
+    assert result['status'] == 'partial' and result['paused_by_configuration'] > 0
+    assert result['discovered'] == result['fetched'] == result['extracted'] == 0
+    assert gui.boundary.fetches == [WECHAT_REFERENCE] and gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('''SELECT id,url,definition_key,first_seen,last_seen
+            FROM daily_links ORDER BY id''').fetchall() == gui.queue_provenance
+
+
+def test_gui_offline_new_pass_keeps_unknown_date_raw_budget_and_no_payment(wechat_environment, monkeypatch):
+    gui = wechat_environment
+    urls = [f'https://mp.weixin.qq.com/s/offline-queued-{index}' for index in range(9)]
+    gui.snapshot['links'] = [{'url': url, 'published_date': None, 'disallowed': False} for url in urls]
+    for url in urls:
+        gui.boundary.put(url, wechat_article('未说明发布日期的已知原文', None))
+    first = daily.run_once(now=NOW, mode='new')
+    assert source_result(first)['discovered'] == 9 and source_result(first)['fetched'] == 4
+    checkpoint = source_result(first)['last_success_at']
+    assert checkpoint == NOW.isoformat()
+    fail_gui_discovery(monkeypatch, acquisition.AcquisitionError('专用桌面不可用。', 'source_blocked'))
+    gui.boundary.fetches.clear()
+    run = daily.run_once(now=NOW + timedelta(days=1), mode='new')
+    result = source_result(run)
+    assert run['status'] == result['status'] == 'partial' and run['coverage_gaps']
+    assert result['discovered'] == result['extracted'] == 0 and result['fetched'] == 4
+    assert result['last_success_at'] == checkpoint and gui.boundary.posts == []
+    assert gui.boundary.fetches[0] == WECHAT_REFERENCE
+    assert set(gui.boundary.fetches[1:]) == set(urls[4:8])
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 8
+        assert db.execute("SELECT COUNT(*) FROM daily_links WHERE state='pending' AND attempt_run IS NULL").fetchone()[0] == 1
+        assert db.execute('SELECT DISTINCT first_seen,last_seen FROM daily_links').fetchall() == [
+            (NOW.isoformat(), NOW.isoformat())]
+        assert db.execute('SELECT last_success_at,history_success_at FROM daily_source_state').fetchone() == (checkpoint, None)
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+
+
+def test_gui_offline_queue_still_verifies_each_http_article_before_save(queued_wechat_history, monkeypatch):
+    gui = queued_wechat_history
+    gui.boundary.put(gui.pending_url, wechat_article(biz='MzAxODAzMjQ1Ng=='))
+    fail_gui_discovery(monkeypatch, acquisition.AcquisitionError('专用桌面不可用。', 'source_runtime_unavailable'))
+    result = source_result(daily.run_once(now=NOW + timedelta(days=1), mode='history'))
+    assert result['status'] == 'partial' and result['last_success_at'] is None
+    assert result['discovered'] == result['fetched'] == result['extracted'] == 0
+    assert result['fetch_failures'] == 1 and gui.boundary.posts == []
+    assert gui.boundary.fetches == [WECHAT_REFERENCE, gui.pending_url]
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT state,document_id FROM daily_links WHERE url=?',
+                          (gui.pending_url,)).fetchone() == ('fetch_failed', None)
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 1
+        assert db.execute('''SELECT id,url,definition_key,first_seen,last_seen
+            FROM daily_links ORDER BY id''').fetchall() == gui.queue_provenance
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('error_code', ['source_runtime_unavailable', 'source_blocked'])
+def test_non_gui_listing_failure_still_blocks_known_history_queue(environment, error_code):
+    identity_url = 'https://college.nju.edu.cn/about.htm'
+    definitions = json.loads(daily.SEED_PATH.read_text(encoding='utf-8'))
+    definitions[0]['identity_url'] = identity_url
+    daily.SEED_PATH.write_text(json.dumps(definitions), encoding='utf-8')
+    environment.put(identity_url, '<html><title>南京大学测试学院</title></html>')
+    environment.put(ROOT, listing([1], '/notices/2.htm'))
+    environment.put('https://college.nju.edu.cn/notices/2.htm', listing([2, 3]))
+    for identity in (2, 3):
+        environment.put(f'https://college.nju.edu.cn/info/1001/{identity}.htm', article(identity, published='2025-01-01'))
+    first = source_result(daily.run_once(now=NOW, mode='history'))
+    assert first['discovered'] == 3 and first['fetched'] == first['pending'] == 1
+    environment.resources[ROOT] = acquisition.AcquisitionError('列表暂时不可用。', error_code)
+    environment.fetches.clear()
+    result = source_result(daily.run_once(now=NOW + timedelta(days=1), mode='history'))
+    assert result['status'] == 'failed' and result['fetched'] == result['extracted'] == 0
+    assert result['pending'] == 1 and result['last_success_at'] is None
+    assert environment.fetches == [identity_url, ROOT] and environment.posts == []
+
+
+WECHAT_PAID_HISTORY = [
+    ('completed', None, None), ('failed', None, None), ('extracting', None, None),
+    *[('not_extracted', 'source_document_model_attempts', status)
+      for status in ('completed', 'failed', 'extracting')],
+    *[('not_extracted', 'daily_model_attempts', status)
+      for status in ('done', 'failed', 'uncertain', 'attempted')],
+]
+
+
+def retain_wechat_paid_history(document_id, model_status, attempt_table, attempt_status):
+    with closing(runtime.connect_db()) as db, db:
+        db.execute('UPDATE source_documents SET model_status=? WHERE id=?', (model_status, document_id))
+        if attempt_table == 'source_document_model_attempts':
+            db.execute('''INSERT INTO source_document_model_attempts(document_id,actor,started_at,model_status)
+                VALUES (?,'explicit-prior-attempt',?,?)''', (document_id, NOW.isoformat(), attempt_status))
+        elif attempt_table == 'daily_model_attempts':
+            db.execute('''INSERT OR IGNORE INTO daily_runs(id,actor,started_at,status,mode)
+                VALUES (900,'prior-daily',?,'partial','new')''', (NOW.isoformat(),))
+            db.execute('INSERT INTO daily_model_attempts(document_id,run_id,status) VALUES (?,900,?)',
+                       (document_id, attempt_status))
+        return {table: db.execute(f'SELECT * FROM {table} WHERE ' +
+                                 ('id=?' if table == 'source_documents' else 'document_id=?'),
+                                 (document_id,)).fetchall()
+                for table in ('source_documents', 'source_document_model_attempts', 'daily_model_attempts')}
+
+
+def assert_wechat_prior_evidence_unchanged(prior, evidence):
+    with closing(runtime.connect_db()) as db:
+        for table, expected in evidence.items():
+            assert db.execute(f'SELECT * FROM {table} WHERE ' +
+                              ('id=?' if table == 'source_documents' else 'document_id=?'),
+                              (prior,)).fetchall() == expected
+        current = db.execute('SELECT id,digest,model_status FROM source_documents WHERE id!=?', (prior,)).fetchall()
+        assert len(current) == 1 and current[0][2] == 'not_extracted'
+        assert current[0][1] != db.execute('SELECT digest FROM source_documents WHERE id=?', (prior,)).fetchone()[0]
+        assert db.execute('SELECT state,document_id FROM daily_links').fetchall() == [('model_uncertain', current[0][0])]
+        for table in ('source_document_model_attempts', 'daily_model_attempts'):
+            assert db.execute(f'SELECT COUNT(*) FROM {table} WHERE document_id=?', (current[0][0],)).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('model_status,attempt_table,attempt_status', WECHAT_PAID_HISTORY)
+def test_gui_changed_digest_never_repays_any_same_url_paid_history(
+        wechat_environment, monkeypatch, model_status, attempt_table, attempt_status):
+    gui = wechat_environment
+    from nannanews import wechat_desktop
+    url = WECHAT_ARTICLES[0]
+    daily.initialize_sources()
+    # A pasted/manual capture without this source association still protects its URL.
+    prior = information.save_document(acquisition.fetch_document(url), source_id=None, actor='manual')['id']
+    evidence = {}
+    discover = wechat_desktop.discover_articles
+
+    def prior_before_capture(*args, **kwargs):
+        # Install each exact paid state after startup recovery (which legitimately
+        # turns interrupted daily attempted records into uncertain), before capture.
+        evidence.update(retain_wechat_paid_history(prior, model_status, attempt_table, attempt_status))
+        return discover(*args, **kwargs)
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', prior_before_capture)
+    gui.boundary.put(url, wechat_article('正文和公开页面模板已变化'))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['fetched'] == 1 and result['extracted'] == 0
+    assert gui.boundary.posts == []
+    assert_wechat_prior_evidence_unchanged(prior, evidence)
+
+
+@pytest.mark.parametrize('model_status,attempt_table,attempt_status', WECHAT_PAID_HISTORY)
+def test_gui_same_url_paid_history_is_rechecked_inside_atomic_reservation(
+        wechat_environment, monkeypatch, model_status, attempt_table, attempt_status):
+    from nannanews import model_audit
+
+    gui = wechat_environment
+    url = WECHAT_ARTICLES[0]
+    daily.initialize_sources()
+    prior = information.save_document(acquisition.fetch_document(url), source_id=None, actor='manual')['id']
+    gui.boundary.put(url, wechat_article('另一版本的完整公开正文'))
+    initialize = model_audit.ModelAudit.__init__
+    evidence = {}
+
+    def interleave(self, *args, **kwargs):
+        initialize(self, *args, **kwargs)
+        assert not evidence
+        # The new version passed daily's preliminary check. Another caller's old
+        # version acquires paid history during audit preparation, before admission.
+        evidence.update(retain_wechat_paid_history(prior, model_status, attempt_table, attempt_status))
+
+    monkeypatch.setattr(model_audit.ModelAudit, '__init__', interleave)
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert evidence and result['extracted'] == 0 and gui.boundary.posts == []
+    assert_wechat_prior_evidence_unchanged(prior, evidence)
+
+
+def test_gui_unpaid_prior_version_does_not_block_first_eligible_extraction(wechat_environment):
+    gui = wechat_environment
+    url = WECHAT_ARTICLES[0]
+    daily.initialize_sources()
+    prior = information.save_document(acquisition.fetch_document(url), source_id=None, actor='manual')['id']
+    gui.boundary.put(url, wechat_article('首次付费前更新的公开正文'))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['extracted'] == 1 and len(gui.boundary.posts) == 1
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT model_status FROM source_documents WHERE id=?', (prior,)).fetchone() == ('not_extracted',)
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 1
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 1
+
+
+def test_gui_comment_publication_date_never_authorizes_undated_article_payment(wechat_environment):
+    from nannanews import wechat_public
+
+    gui = wechat_environment
+    payload = {'@type': 'NewsArticle', 'comment': {
+        '@type': 'Comment', 'datePublished': NOW.date().isoformat()}}
+    raw = wechat_article('无发布日期的历史置顶文章', None).replace(
+        '</body>', '<script type="application/ld+json">' + json.dumps(payload) + '</script></body>')
+    gui.boundary.put(WECHAT_ARTICLES[0], raw)
+    document = acquisition.fetch_document(WECHAT_ARTICLES[0])
+    gui.snapshot['links'][0]['published_date'] = wechat_public.published_date(document)
+
+    daily.run_once(now=NOW, mode='new')
+    daily.run_once(now=NOW + timedelta(days=1), mode='history')
+
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+        assert db.execute('''SELECT l.state,l.eligible,d.source_published_date
+            FROM daily_links l JOIN source_documents d ON d.id=l.document_id''').fetchone() == (
+                'history_deferred', 0, None)
+
+
+@pytest.mark.parametrize('published,expected_paid', [('2026-10-14', True), ('2025-01-01', False), (None, False)])
+def test_gui_url_without_listing_date_is_captured_before_paid_eligibility(wechat_environment, published, expected_paid):
+    gui = wechat_environment
+    gui.snapshot['links'][0]['published_date'] = None
+    gui.boundary.put(WECHAT_ARTICLES[0], wechat_article('原文中的明确发布日期决定是否提取', published))
+    daily.run_once(now=NOW, mode='new')
+    assert len(gui.boundary.posts) == int(expected_paid)
+    with closing(runtime.connect_db()) as db:
+        row = db.execute('''SELECT l.state,l.eligible,d.source_published_date,d.model_status
+            FROM daily_links l JOIN source_documents d ON d.id=l.document_id''').fetchone()
+        assert row == ('done' if expected_paid else 'history_deferred', int(expected_paid), published,
+                       'completed' if expected_paid else 'not_extracted')
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == int(expected_paid)
+
+
+def test_gui_original_failure_keeps_discovered_url_for_unpaid_capture(wechat_environment):
+    gui = wechat_environment
+    gui.snapshot['links'][0]['published_date'] = None
+    gui.boundary.put(WECHAT_ARTICLES[0], wechat_article(published=None))
+    original = gui.boundary.resources[WECHAT_ARTICLES[0]]
+    gui.boundary.resources[WECHAT_ARTICLES[0]] = acquisition.AcquisitionError('原文连接失败。', 'source_blocked')
+    daily.run_once(now=NOW, mode='new')
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT url,state,document_id FROM daily_links').fetchone() == (
+            WECHAT_ARTICLES[0], 'fetch_failed', None)
+    gui.boundary.resources[WECHAT_ARTICLES[0]] = original
+    daily.run_once(now=NOW, mode='new')
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT state,eligible FROM daily_links').fetchone() == ('history_deferred', 0)
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('ambiguous', [False, True])
+def test_gui_cached_queue_date_cannot_qualify_an_undated_http_version(wechat_environment, ambiguous):
+    gui = wechat_environment
+    raw = wechat_article('原文没有可核对的发布日期', None)
+    if ambiguous:
+        raw += '<em id="publish_time">2026-10-14</em><meta property="article:published_time" content="2025-01-01">'
+    gui.boundary.put(WECHAT_ARTICLES[0], raw)
+    # The listing/queue still has a current priority date; only fresh HTTP
+    # publication evidence may admit the newly captured GUI document.
+    daily.run_once(now=NOW, mode='new')
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('''SELECT l.state,l.eligible,d.source_published_date
+            FROM daily_links l JOIN source_documents d ON d.id=l.document_id''').fetchone() == (
+                'history_deferred', 0, None)
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('priority_kind', ['publication', 'event'])
+@pytest.mark.parametrize('cached_document_date', [False, True])
+def test_gui_retained_ready_row_cannot_pay_using_only_cached_priority(wechat_environment, priority_kind, cached_document_date):
+    gui = wechat_environment
+    gui.snapshot['links'][0]['published_date'] = None
+    gui.boundary.put(WECHAT_ARTICLES[0], wechat_article('没有发布日期的保留原文', None))
+    daily.run_once(now=NOW, mode='history')
+    with closing(runtime.connect_db()) as db, db:
+        priority = (NOW + timedelta(days=1)).date().isoformat() if priority_kind == 'event' else NOW.date().isoformat()
+        db.execute("UPDATE daily_links SET state='ready',eligible=1,priority_kind=?,priority_date=?",
+                   (priority_kind, priority))
+        if cached_document_date:
+            db.execute('UPDATE source_documents SET source_published_date=?', (NOW.date().isoformat(),))
+    daily.run_once(now=NOW, mode='new')
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT state,eligible FROM daily_links').fetchone() == ('history_deferred', 0)
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+
+
+def test_failed_gui_raw_batch_cannot_starve_untouched_discovered_urls(wechat_environment):
+    gui = wechat_environment
+    failed = [f'https://mp.weixin.qq.com/s/failed-{i}' for i in range(4)]
+    fresh = [f'https://mp.weixin.qq.com/s/untouched-{i}' for i in range(4)]
+    gui.snapshot['links'] = [{'url': url, 'published_date': None, 'disallowed': False} for url in failed]
+    for url in failed:
+        gui.boundary.resources[url] = acquisition.AcquisitionError('原文暂时不可读取。', 'source_blocked')
+    first = daily.run_once(now=NOW, mode='new')
+    gui.snapshot['links'] = [{'url': url, 'published_date': None, 'disallowed': False} for url in fresh]
+    for url in fresh:
+        gui.boundary.put(url, wechat_article('新发现且从未抓取的原文', None))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['fetched'] == 4
+    assert gui.boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 4
+        assert db.execute("SELECT COUNT(*) FROM daily_links WHERE state='history_deferred'").fetchone()[0] == 4
+        assert {row[0] for row in db.execute("SELECT attempt_run FROM daily_links WHERE state='fetch_failed'")} == {first['id']}
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+
+
+OFFICIAL_WECHAT_ROOT = 'https://college.nju.edu.cn/wechat.htm'
+
+
+def official_wechat_listing(urls):
+    links = ''.join(f'<li><a href="{url}">公众号原文</a><time>{NOW.date().isoformat()}</time></li>'
+                    for url in urls)
+    return '<html><title>南京大学测试学院公众号动态</title><body><ul>' + links + '</ul></body></html>'
+
+
+@pytest.fixture
+def official_wechat_environment(environment, monkeypatch):
+    from nannanews import wechat_desktop
+
+    daily.SEED_PATH.write_text(json.dumps([{
+        'id': 'test-college', 'name': '南京大学公众号官网原文链接', 'url': OFFICIAL_WECHAT_ROOT,
+        'identity_url': WECHAT_REFERENCE, 'expected_identity': '南京大学',
+        'wechat_biz': WECHAT_BIZ, 'listing_identity': '南京大学测试学院',
+        'kind': 'wechat_official_links', 'enabled': True
+    }]), encoding='utf-8')
+    environment.put(WECHAT_REFERENCE, wechat_article('发布者身份参考文章', '2025-01-01'))
+    environment.put(OFFICIAL_WECHAT_ROOT, official_wechat_listing(WECHAT_ARTICLES[:1]))
+    for url in WECHAT_ARTICLES:
+        environment.put(url, wechat_article())
+
+    def forbidden_desktop(*args, **kwargs):
+        pytest.fail('Official-site WeChat discovery must not invoke the desktop.')
+
+    monkeypatch.setattr(wechat_desktop, 'discover_articles', forbidden_desktop)
+    return environment
+
+
+def test_official_links_capture_verified_originals_on_http_lane_without_full_account_checkpoint(
+        official_wechat_environment, monkeypatch):
+    from threading import current_thread
+
+    boundary = official_wechat_environment
+    boundary.put(OFFICIAL_WECHAT_ROOT, official_wechat_listing(WECHAT_ARTICLES))
+    boundary.put(WECHAT_ARTICLES[1], wechat_article('完整历史原文', '2025-01-01'))
+    boundary.put(WECHAT_ARTICLES[2], wechat_article('未说明发布日期的原文', None))
+    fetch = boundary.fetch
+    listing_threads = []
+
+    def observe_http(url, *args, **kwargs):
+        if url == OFFICIAL_WECHAT_ROOT:
+            listing_threads.append(current_thread().name)
+        return fetch(url, *args, **kwargs)
+
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', observe_http)
+    run = daily.run_once(now=NOW, mode='new')
+    result = source_result(run)
+    assert run['status'] == result['status'] == 'partial'
+    assert result['discovered'] == result['fetched'] == 3
+    assert result['extracted'] == 1 and len(boundary.posts) == 1
+    assert result['last_success_at'] is None
+    assert listing_threads and all(name.startswith('daily-web') for name in listing_threads)
+    with closing(runtime.connect_db()) as db:
+        rows = db.execute('''SELECT l.url,l.state,l.eligible,l.priority_date,l.first_seen,
+            d.id,d.source_published_date,d.source_id FROM daily_links l
+            JOIN source_documents d ON d.id=l.document_id ORDER BY l.url''').fetchall()
+        assert [(row[0], row[1], row[2], row[3], row[4], row[6], row[7]) for row in rows] == [
+            (WECHAT_ARTICLES[0], 'done', 1, NOW.date().isoformat(), NOW.isoformat(),
+             NOW.date().isoformat(), 'test-college'),
+            (WECHAT_ARTICLES[1], 'history_deferred', 0, '2025-01-01', NOW.isoformat(),
+             '2025-01-01', 'test-college'),
+            (WECHAT_ARTICLES[2], 'history_deferred', 0, None, NOW.isoformat(), None, 'test-college')]
+        assert db.execute('SELECT url,state FROM daily_pages').fetchall() == [(OFFICIAL_WECHAT_ROOT, 'done')]
+        assert db.execute('SELECT last_success_at,history_success_at FROM daily_source_state').fetchone() == (None, None)
+    for row in rows:
+        document = information.get_document(row[5])
+        assert document['source_type'] == 'wechat' and document['capture_complete'] is True
+        assert document['raw_content'] == boundary.resources[row[0]][0].decode()
+    assert all(record['verification_status'] != 'approved' for record in information.query_records({})['records'])
+
+
+def test_official_links_history_retains_complete_raw_without_models_or_success_checkpoint(official_wechat_environment):
+    boundary = official_wechat_environment
+    boundary.put(OFFICIAL_WECHAT_ROOT, official_wechat_listing(WECHAT_ARTICLES))
+    for url in WECHAT_ARTICLES:
+        boundary.put(url, wechat_article('保留的完整历史原文', '2025-01-01'))
+    for offset in range(4):
+        result = source_result(daily.run_once(now=NOW + timedelta(days=offset), mode='history'))
+        assert result['status'] == 'partial' and result['last_success_at'] is None
+        assert result['fetched'] == int(offset < 3) and result['extracted'] == 0
+    assert boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        rows = db.execute('''SELECT l.state,l.eligible,d.id,d.source_published_date,d.model_status
+            FROM daily_links l JOIN source_documents d ON d.id=l.document_id''').fetchall()
+        assert len(rows) == 3
+        assert all((row[0], row[1], row[3], row[4]) ==
+                   ('history_deferred', 0, '2025-01-01', 'not_extracted') for row in rows)
+        assert db.execute('SELECT last_success_at,history_success_at FROM daily_source_state').fetchone() == (None, None)
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+    assert all(information.get_document(row[2])['capture_complete'] is True for row in rows)
+
+
+@pytest.mark.parametrize('mismatch', ['reference', 'capture'])
+def test_official_links_verify_reference_and_article_biz_before_attribution_or_payment(
+        official_wechat_environment, monkeypatch, mismatch):
+    boundary = official_wechat_environment
+    target = WECHAT_REFERENCE if mismatch == 'reference' else WECHAT_ARTICLES[0]
+    discovery_metadata = boundary.resources[target]
+    boundary.put(target, wechat_article(biz='MzAxODAzMjQ1Ng=='))
+    if mismatch == 'capture':
+        fetch = boundary.fetch
+        article_reads = 0
+
+        def change_after_discovery(url, *args, **kwargs):
+            nonlocal article_reads
+            response = fetch(url, *args, **kwargs)
+            if url == target:
+                article_reads += 1
+                if article_reads == 1:
+                    # Discovery proves the configured account; fresh capture must
+                    # independently reject an article whose publisher changed.
+                    return discovery_metadata
+            return response
+
+        monkeypatch.setattr(acquisition, 'fetch_public_resource', change_after_discovery)
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['status'] == ('failed' if mismatch == 'reference' else 'partial')
+    assert result['last_success_at'] is None and result['extracted'] == 0
+    assert (OFFICIAL_WECHAT_ROOT in boundary.fetches) is (mismatch == 'capture')
+    assert boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+        if mismatch == 'capture':
+            assert db.execute('SELECT state,document_id FROM daily_links').fetchall() == [('fetch_failed', None)]
+
+
+@pytest.mark.parametrize('mode', ['new', 'history'])
+@pytest.mark.parametrize('failure', ['source_blocked', 'source_runtime_unavailable', 'publisher_identity'])
+def test_official_listing_failure_never_continues_known_queue(official_wechat_environment, mode, failure):
+    boundary = official_wechat_environment
+    boundary.put(OFFICIAL_WECHAT_ROOT, official_wechat_listing(WECHAT_ARTICLES[:2]))
+    for url in WECHAT_ARTICLES[:2]:
+        boundary.put(url, wechat_article('已发现的历史原文', '2025-01-01'))
+    first = source_result(daily.run_once(now=NOW, mode='history'))
+    assert first['discovered'] == 2 and first['fetched'] == 1
+    with closing(runtime.connect_db()) as db:
+        pending = db.execute("SELECT url FROM daily_links WHERE state='pending'").fetchone()[0]
+        provenance = db.execute('SELECT id,url,definition_key,first_seen,last_seen FROM daily_links ORDER BY id').fetchall()
+    if failure == 'publisher_identity':
+        boundary.put(OFFICIAL_WECHAT_ROOT, '<html><title>其他发布者</title></html>')
+    else:
+        boundary.resources[OFFICIAL_WECHAT_ROOT] = acquisition.AcquisitionError('官网列表暂时不可用。', failure)
+    boundary.fetches.clear()
+    result = source_result(daily.run_once(now=NOW + timedelta(days=1), mode=mode))
+    assert result['status'] == 'failed' and result['last_success_at'] is None
+    assert result['fetched'] == result['extracted'] == 0
+    assert boundary.fetches == [WECHAT_REFERENCE, OFFICIAL_WECHAT_ROOT]
+    assert pending not in boundary.fetches and boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT id,url,definition_key,first_seen,last_seen FROM daily_links ORDER BY id').fetchall() == provenance
+        assert db.execute("SELECT attempt_run FROM daily_links WHERE state='pending'").fetchone() == (None,)
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 1
+        assert db.execute('SELECT last_success_at,history_success_at FROM daily_source_state').fetchone() == (None, None)
+
+
+@pytest.mark.parametrize('model_status,attempt_table,attempt_status', WECHAT_PAID_HISTORY)
+def test_official_links_changed_digest_never_repays_any_same_url_paid_history(
+        official_wechat_environment, monkeypatch, model_status, attempt_table, attempt_status):
+    boundary = official_wechat_environment
+    url = WECHAT_ARTICLES[0]
+    daily.initialize_sources()
+    prior = information.save_document(acquisition.fetch_document(url), source_id=None, actor='manual')['id']
+    fetch = boundary.fetch
+    evidence = {}
+
+    def prior_before_capture(target, *args, **kwargs):
+        if target == OFFICIAL_WECHAT_ROOT:
+            evidence.update(retain_wechat_paid_history(prior, model_status, attempt_table, attempt_status))
+        return fetch(target, *args, **kwargs)
+
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', prior_before_capture)
+    boundary.put(url, wechat_article('官网发现的新正文版本'))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['fetched'] == 1 and result['extracted'] == 0
+    assert result['status'] == 'partial' and result['last_success_at'] is None
+    assert evidence and boundary.posts == []
+    assert_wechat_prior_evidence_unchanged(prior, evidence)
+
+
+@pytest.mark.parametrize('model_status,attempt_table,attempt_status', WECHAT_PAID_HISTORY)
+def test_official_links_paid_history_is_rechecked_inside_atomic_reservation(
+        official_wechat_environment, monkeypatch, model_status, attempt_table, attempt_status):
+    from nannanews import model_audit
+
+    boundary = official_wechat_environment
+    url = WECHAT_ARTICLES[0]
+    daily.initialize_sources()
+    prior = information.save_document(acquisition.fetch_document(url), source_id=None, actor='manual')['id']
+    boundary.put(url, wechat_article('通过官网发现的另一完整版本'))
+    initialize = model_audit.ModelAudit.__init__
+    evidence = {}
+
+    def interleave(self, *args, **kwargs):
+        initialize(self, *args, **kwargs)
+        assert not evidence
+        evidence.update(retain_wechat_paid_history(prior, model_status, attempt_table, attempt_status))
+
+    monkeypatch.setattr(model_audit.ModelAudit, '__init__', interleave)
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['status'] == 'partial' and result['last_success_at'] is None
+    assert evidence and result['extracted'] == 0 and boundary.posts == []
+    assert_wechat_prior_evidence_unchanged(prior, evidence)
+
+
+def test_official_definition_key_tracks_listing_identity_without_changing_gui_key(
+        official_wechat_environment):
+    source = next(source for source in daily.initialize_sources() if source['id'] == 'test-college')
+    definition = daily._definition(source)
+    assert 'configuration_error' not in definition
+    key = definition['definition_key']
+    assert daily._definition_key(definition | {'listing_identity': '南京大学其他学院'}) != key
+    assert daily._definition_key(definition | {'wechat_biz': 'MzAxODAzMjQ1Ng=='}) != key
+    gui = definition | {'kind': 'wechat_gui', 'url': WECHAT_REFERENCE}
+    assert daily._definition_key(gui | {'listing_identity': '不参与 GUI 队列身份'}) == daily._definition_key(gui)
+    assert daily._definition_key(gui | {'wechat_biz': 'MzAxODAzMjQ1Ng=='}) != daily._definition_key(gui)
+
+
+@pytest.mark.parametrize('priority_kind', ['publication', 'event'])
+@pytest.mark.parametrize('cached_document_date', [False, True])
+def test_official_retained_ready_row_requires_article_date_not_cached_priority(
+        official_wechat_environment, priority_kind, cached_document_date):
+    boundary = official_wechat_environment
+    boundary.put(WECHAT_ARTICLES[0], wechat_article('未说明发布日期的完整原文', None))
+    daily.run_once(now=NOW, mode='history')
+    with closing(runtime.connect_db()) as db, db:
+        priority = (NOW + timedelta(days=1)).date().isoformat() if priority_kind == 'event' else NOW.date().isoformat()
+        db.execute("UPDATE daily_links SET state='ready',eligible=1,priority_kind=?,priority_date=?",
+                   (priority_kind, priority))
+        if cached_document_date:
+            db.execute('UPDATE source_documents SET source_published_date=?', (NOW.date().isoformat(),))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['status'] == 'partial' and result['last_success_at'] is None
+    assert boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT state,eligible FROM daily_links').fetchone() == ('history_deferred', 0)
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+
+
+def test_official_unknown_date_capture_obeys_bounded_visible_scope(official_wechat_environment):
+    boundary = official_wechat_environment
+    urls = [f'https://mp.weixin.qq.com/s/official-undated-{index}' for index in range(9)]
+    boundary.put(OFFICIAL_WECHAT_ROOT, official_wechat_listing(urls))
+    for url in urls:
+        boundary.put(url, wechat_article('未说明发布日期的完整原文', None))
+    result = source_result(daily.run_once(now=NOW, mode='new'))
+    assert result['status'] == 'partial' and result['last_success_at'] is None
+    assert result['discovered'] == result['fetched'] == 4
+    assert boundary.posts == []
+    with closing(runtime.connect_db()) as db:
+        assert db.execute('SELECT url,state,eligible FROM daily_links ORDER BY id').fetchall() == [
+            (url, 'history_deferred', 0) for url in urls[:4]]
+        assert db.execute('SELECT COUNT(*) FROM source_documents').fetchone()[0] == 4
+        assert db.execute('SELECT COUNT(*) FROM daily_model_attempts').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM source_document_model_attempts').fetchone()[0] == 0

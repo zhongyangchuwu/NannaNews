@@ -34,6 +34,42 @@ def test_static_literal_recovers_text_and_real_image_urls_without_running_javasc
     assert base64.b64decode(document['raw_response_base64']) == raw
 
 
+def test_picture_article_collects_only_literal_page_images_not_cover_or_original_metadata(monkeypatch):
+    script = '''window.article = {
+        item_show_type: '8' * 1,
+        content_noencode: '<p>讲座时间：2026年5月17日，地点：报告厅。</p>',
+        picture_page_info_list: [
+            {cdn_url: 'https://mmbiz.qpic.cn/poster-one?wx_fmt=png', width: '2657' * 1,
+             original_info: {cdn_url: 'https://private.example.org/original'},
+             watermark_info: {cdn_url: 'https://static.example.org/watermark'}},
+            {"cdn_url": 'https://mmbiz.qpic.cn/poster-two?wx_fmt=png&from=appmsg'}
+        ], share_cover: 'https://static.example.org/cover'
+    };'''
+    raw = source(monkeypatch, script)
+    document = acquisition.fetch_document(URL)
+    assert document['images'] == ['https://mmbiz.qpic.cn/poster-one?wx_fmt=png',
+                                  'https://mmbiz.qpic.cn/poster-two?wx_fmt=png&from=appmsg']
+    assert document['text'] == '讲座时间：2026年5月17日，地点：报告厅。'
+    assert base64.b64decode(document['raw_response_base64']) == raw
+
+
+@pytest.mark.parametrize('pages', [
+    'loadPictures()',
+    '[{cdn_url: choosePrivateImage()}]',
+    '[{cdn_url: "https://mmbiz.qpic.cn/first"}].concat(otherPages)',
+    '[{cdn_url: "https://mmbiz.qpic.cn/first", cdn_url: "https://mmbiz.qpic.cn/second"}]',
+    '[{cdn_url: "https://mmbiz.qpic.cn/first", ...otherPage}]',
+    '[{cdn_url: "https://mmbiz.qpic.cn/first", ["cdn_url"]: "https://mmbiz.qpic.cn/second"}]',
+    '[{cdn_url: "https://mmbiz.qpic.cn/first", otherPage}]',
+])
+def test_picture_article_dynamic_or_ambiguous_page_lists_are_not_partial_captures(monkeypatch, pages):
+    source(monkeypatch, "window.article = {content_noencode: '<p>正文与海报共同构成通知。</p>', "
+           + 'picture_page_info_list: ' + pages + '};')
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        acquisition.fetch_document(URL)
+    assert caught.value.code == 'source_incomplete'
+
+
 def test_existing_article_container_wins_over_an_unneeded_dynamic_fallback(monkeypatch):
     source(monkeypatch, "window.article = { content_noencode: loadPrivateContent() };",
            before='<h1 id="activity-name">真实标题</h1><div id="js_content">真实公开正文</div>')

@@ -1,0 +1,45 @@
+name: nannanews-wechat-desktop
+
+services:
+  desktop:
+    image: nannanews-wechat-desktop:4.1.13.26
+    platform: linux/amd64
+    build:
+      context: .
+    init: true
+    restart: "no"
+    user: "10001:10001"
+    ports:
+      - "127.0.0.1:33440:6080"
+    volumes:
+      - desktop-private:/home/wechat
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+      - /var/tmp:size=64m,mode=1777
+    shm_size: 256m
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2.0
+    pids_limit: 512
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    healthcheck:
+      test: [CMD, /usr/local/bin/desktop-health]
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    logging:
+      driver: local
+      options:
+        max-size: 1m
+        max-file: "2"
+
+volumes:
+  desktop-private:
+    name: nannanews_wechat_desktop_private
+    external: true

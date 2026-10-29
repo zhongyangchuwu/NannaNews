@@ -1,9 +1,10 @@
-"""Source-only recovery from operator-proxy benchmark/Fake-IP DNS answers.
+"""Source-only recovery from benchmark/Fake-IP DNS answers.
 
 Cloudflare documents /dns-query JSON and bootstrap 1.1.1.1 at:
 https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/
 https://developers.cloudflare.com/1.1.1.1/ip-addresses/
-No direct route, alternate provider, redirects, credentials, or model DNS changes.
+Preserve inherited proxy/direct policy; no alternate provider, redirects,
+credentials, private origin addresses, or model DNS changes.
 """
 from collections import OrderedDict
 from functools import partial
@@ -160,8 +161,13 @@ def _answer(body, host, kind, validate_public):
 
 
 def _query(acquisition, host, kind, proxy, proxy_address, deadline):
-    connection = acquisition._PublicTunnelConnection(RESOLVER_HOST, 443, RESOLVER_ADDRESS,
-        proxy_address, proxy[1], deadline, True)
+    if proxy is None:
+        connection = acquisition._PinnedHTTPS(RESOLVER_HOST, 443, RESOLVER_ADDRESS,
+            acquisition._source_timeout(deadline))
+        connection._source_deadline = deadline
+    else:
+        connection = acquisition._PublicTunnelConnection(RESOLVER_HOST, 443, RESOLVER_ADDRESS,
+            proxy_address, proxy[1], deadline, True)
     connection.response_class = partial(acquisition._DeadlineHTTPResponse, deadline=deadline)
     response = None
     try:
@@ -206,16 +212,16 @@ def _query(acquisition, host, kind, proxy, proxy_address, deadline):
 
 
 def resolve_public_addresses(host, proxy, deadline):
-    """Resolve only through the unchanged inherited proxy and fixed trusted DoH.
+    """Resolve through fixed verified-TLS DoH with unchanged proxy/direct policy.
 
     The caller establishes the all-Fake-IP OS-answer prerequisite. Resolver
-    policy is checked even for cache hits; failures never fall back to direct DNS.
+    policy is checked even for cache hits; failures never change the route.
     """
     from nannanews import acquisition
 
     host = _hostname(host)
-    if proxy is None or acquisition._source_proxy(urlsplit(RESOLVER_URL)) != proxy:
-        raise SourceDnsError('Inherited proxy policy does not permit the same trusted-DNS route; no direct or alternate route was used.')
+    if acquisition._source_proxy(urlsplit(RESOLVER_URL)) != proxy:
+        raise SourceDnsError('Inherited proxy/direct policy does not permit the same trusted-DNS route; no alternate route was used.')
     acquisition._require_public_addresses([RESOLVER_ADDRESS])
     deadline = min(deadline, time.monotonic() + RESOLUTION_TIMEOUT)
     remaining = deadline - time.monotonic()
@@ -231,12 +237,15 @@ def resolve_public_addresses(host, proxy, deadline):
                 _CACHE.move_to_end(key)
                 return list(acquisition._require_public_addresses(cached[1]))
             del _CACHE[key]
-        proxy_addresses = acquisition._resolve_addresses(proxy[0], proxy[1], acquisition._source_timeout(deadline))
-        if not proxy_addresses or any(_fake_address(address) for address in proxy_addresses):
-            raise SourceDnsError('The configured proxy itself has benchmark/Fake-IP DNS answers; no benchmark address was connected.')
+        proxy_address = None
+        if proxy is not None:
+            proxy_addresses = acquisition._resolve_addresses(proxy[0], proxy[1], acquisition._source_timeout(deadline))
+            if not proxy_addresses or any(_fake_address(address) for address in proxy_addresses):
+                raise SourceDnsError('The configured proxy itself has benchmark/Fake-IP DNS answers; no benchmark address was connected.')
+            proxy_address = proxy_addresses[0]
         addresses, expirations = [], []
         for kind in (1, 28):
-            resolved, expires = _query(acquisition, host, kind, proxy, proxy_addresses[0], deadline)
+            resolved, expires = _query(acquisition, host, kind, proxy, proxy_address, deadline)
             addresses.extend(resolved)
             expirations.append(expires)
         addresses = list(dict.fromkeys(addresses))
@@ -253,7 +262,7 @@ def resolve_public_addresses(host, proxy, deadline):
     except acquisition.AcquisitionError as error:
         if error.code == 'unsafe_source':
             raise
-        raise SourceDnsError('Trusted source DNS could not complete through the inherited proxy within its deadline.') from None
+        raise SourceDnsError('Trusted source DNS could not complete through the inherited route within its deadline.') from None
     except (OSError, http.client.HTTPException):
         raise SourceDnsError('Trusted source DNS transport or TLS verification failed; no alternate route was used.') from None
     finally:

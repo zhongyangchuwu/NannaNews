@@ -161,11 +161,11 @@ def test_literal_or_nonpublic_hostnames_cannot_use_fake_ip_compatibility(transpo
 
 
 @pytest.mark.parametrize('setting', ['origin_proxy', 'resolver_proxy', 'different_resolver_proxy'])
-def test_absent_or_changed_inherited_route_never_uses_a_direct_or_other_proxy(transport, setting):
+def test_different_inherited_routes_never_use_direct_or_another_proxy(transport, setting):
     transport[setting] = setting == 'different_resolver_proxy'
     with pytest.raises(acquisition.AcquisitionError) as caught:
         fetch()
-    assert caught.value.code == ('unsafe_source' if setting == 'origin_proxy' else 'source_dns_unavailable')
+    assert caught.value.code == 'source_dns_unavailable'
     assert transport['connections'] == []
 
 
@@ -369,3 +369,40 @@ def test_only_current_official_benchmark_prefixes_are_eligible():
     assert source_dns.is_fake_ip_answer(HOST, ['198.18.0.0', '198.19.255.255', '2001:2:0:ffff::1'])
     assert not source_dns.is_fake_ip_answer(HOST, ['198.17.255.255'])
     assert not source_dns.is_fake_ip_answer(HOST, ['2001:200::1'])  # Uncorrected RFC5180 typo is NOT a Fake-IP pool.
+
+
+@pytest.fixture
+def direct_transport(transport, monkeypatch):
+    transport['origin_proxy'] = transport['resolver_proxy'] = False
+    connection = acquisition._PublicTunnelConnection
+    def direct(host, port, address, timeout):
+        return connection(host, port, address, None, None, transport['clock'] + timeout, True)
+    monkeypatch.setattr(acquisition, '_PinnedHTTPS', direct)
+    return transport
+
+
+def test_no_proxy_fake_ip_pins_fixed_tls_resolver_then_validated_public_origin(direct_transport):
+    assert fetch()[0] == b'original public source'
+    assert {record['address'] for record in direct_transport['connections']} == {'1.1.1.1', PUBLIC4}
+    for record in direct_transport['connections']:
+        assert record['proxy_address'] is None and record['secure'] is True
+        assert record['headers']['Host'] == record['host']
+        assert not {'Cookie', 'Authorization', 'Proxy-Authorization'} & record['headers'].keys()
+    assert origins(direct_transport)[0]['host'] == HOST
+    assert all(host == HOST for host, _, _ in direct_transport['dns'])
+
+
+@pytest.mark.parametrize('failure', ['tls', 'redirect', 'private_a', 'private_aaaa'])
+def test_no_proxy_trusted_dns_fails_closed_without_origin_or_route_fallback(direct_transport, failure):
+    if failure == 'tls':
+        direct_transport['resolver_failure'] = ssl.SSLCertVerificationError('untrusted certificate')
+    elif failure == 'redirect':
+        direct_transport['resolver_status'] = 302
+    else:
+        kind, data = (1, '127.0.0.1') if failure == 'private_a' else (28, 'fd00::1')
+        direct_transport['payloads'][(HOST, kind)] = answer(HOST, kind, data)
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        fetch()
+    assert caught.value.code == ('unsafe_source' if failure.startswith('private_') else 'source_dns_unavailable')
+    assert origins(direct_transport) == []
+    assert {record['address'] for record in direct_transport['connections']} == {'1.1.1.1'}

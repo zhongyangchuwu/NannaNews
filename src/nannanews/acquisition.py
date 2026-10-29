@@ -16,6 +16,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from functools import partial, wraps
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urljoin, urlsplit, urlunsplit
@@ -32,16 +33,21 @@ from nannanews import runtime
 from nannanews.content_rules import EXTRACTION_INSTRUCTIONS
 
 MAX_BODY = 16 * 1024 * 1024
-SOURCE_CAPTURE_VERSION = 'public-source-v3-fakeip-media-policy-20261017'
+SOURCE_CAPTURE_VERSION = 'public-source-v9-article-media-20261023'
 MAX_SOURCE_ERROR_BODY = 256 * 1024
 # Source evidence limits are independent of the smaller model representations.
 MAX_IMAGE = 32 * 1024 * 1024
 MAX_IMAGES = 64
+# Aggregate model admission is separate from the per-source/upload/PDF limit.
+MAX_MODEL_IMAGES = 128
 MAX_MEDIA_BYTES = 128 * 1024 * 1024
-MAX_IMAGE_PIXELS = 100_000_000
+MAX_IMAGE_PIXELS = 400_000_000
+# Pillow raises a hard error at twice this finite process-wide threshold.
+# Match the acquisition ceiling (including other source/GUI Pillow consumers).
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS // 2
 MAX_IMAGE_FRAMES = 64
-MAX_IMAGE_FRAME_PIXELS = 256_000_000
-MAX_DOCUMENT_FRAME_PIXELS = 512_000_000
+MAX_IMAGE_FRAME_PIXELS = 512_000_000
+MAX_DOCUMENT_FRAME_PIXELS = 1_024_000_000
 MAX_MODEL_IMAGE_PATCHES = 28000
 MAX_MODEL_TOTAL_PATCHES = 56000
 MAX_MODEL_IMAGE_BYTES = 4 * 1024 * 1024
@@ -60,10 +66,24 @@ bp = Blueprint('acquisition', __name__)
 
 
 class AcquisitionError(Exception):
-    def __init__(self, message, code='acquisition_failed', status=422):
+    def __init__(self, message, code='acquisition_failed', status=422, *,
+                 model_http_status=None, model_retry_after_seconds=None,
+                 model_transport_failure=False):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.model_http_status = (model_http_status if type(model_http_status) is int
+                                  and 100 <= model_http_status <= 599 else None)
+        self.model_retry_after_seconds = None
+        if type(model_retry_after_seconds) in (int, float):
+            try:
+                retry_after_seconds = float(model_retry_after_seconds)
+            except (OverflowError, ValueError):
+                pass
+            else:
+                if math.isfinite(retry_after_seconds) and retry_after_seconds > 0:
+                    self.model_retry_after_seconds = retry_after_seconds
+        self.model_transport_failure = model_transport_failure is True
 
 
 def canonical_url(url):
@@ -467,7 +487,7 @@ def fetch_public_resource(url, max_bytes=MAX_BODY, deadline=None):
                     try:
                         addresses = _public_addresses(parts.hostname, port, _source_timeout(deadline))
                     except AcquisitionError as error:
-                        if (error.code != 'unsafe_source' or proxy is None
+                        if (error.code != 'unsafe_source'
                                 or getattr(error, '_os_dns_host', None) != parts.hostname):
                             raise
                         from nannanews.source_dns import SourceDnsError, is_fake_ip_answer, resolve_public_addresses
@@ -717,10 +737,10 @@ def _pdf_preview_images(script, base_url):
 
 
 def _wechat_static_content(soup):
-    """Read the reported content_noencode string field, never evaluate source JS.
+    """Read literal article HTML and picture-page CDN declarations, never source JS.
 
-    This alternate representation is externally documented; local/live recovery
-    still depends on receiving the literal article bytes rather than a gate.
+    Recovery still requires actual retained article bytes, not an access gate.
+    Picture metadata contributes only each page's direct public cdn_url.
     """
     def incomplete():
         raise AcquisitionError('微信文章静态正文声明含动态表达式、歧义或不完整转义；原始响应已保留，未执行脚本。', 'source_incomplete')
@@ -772,7 +792,91 @@ def _wechat_static_content(soup):
                 incomplete()
         incomplete()
 
-    values = []
+    def picture_pages(source, start):
+        # Only direct cdn_url fields of literal page objects are article media;
+        # nested covers, watermarks and original_info are not alternate sources.
+        if source[start:start + 1] != '[':
+            incomplete()
+        index, stack, urls, current, previous, expect_record = start + 1, [']'], [], None, None, True
+        while index < len(source):
+            char = source[index]
+            if char.isspace():
+                index += 1
+                continue
+            if source.startswith('//', index):
+                end = source.find('\n', index + 2)
+                index = len(source) if end < 0 else end + 1
+                continue
+            if source.startswith('/*', index):
+                end = source.find('*/', index + 2)
+                if end < 0:
+                    incomplete()
+                index = end + 2
+                continue
+            if len(stack) == 1:
+                if char == ']':
+                    return urls, index + 1
+                if not expect_record:
+                    if char != ',':
+                        incomplete()
+                    expect_record = True
+                    index += 1
+                    continue
+                if char != '{':
+                    incomplete()
+                stack.append('}')
+                current, previous, expect_record = None, '{', False
+                index += 1
+                continue
+            member = stack[-1] == '}' and previous in {'{', ','}
+            word = None
+            if char in "'\"":
+                word, index = literal(source, index)
+            else:
+                token = identifier.match(source, index)
+                if token is not None:
+                    word, index = token.group(), token.end()
+            if member and char != '}':
+                if word is None:
+                    incomplete()
+                while index < len(source) and source[index].isspace():
+                    index += 1
+                if source[index:index + 1] != ':':
+                    incomplete()
+                index += 1
+                while index < len(source) and source[index].isspace():
+                    index += 1
+            if word is not None:
+                if member and len(stack) == 2 and word == 'cdn_url':
+                    if current is not None or source[index:index + 1] not in {"'", '"'}:
+                        incomplete()
+                    current, index = literal(source, index)
+                    while index < len(source) and source[index].isspace():
+                        index += 1
+                    if not current or source[index:index + 1] not in {',', '}'}:
+                        incomplete()
+                previous = 'value'
+                continue
+            if char in '{[':
+                stack.append('}' if char == '{' else ']')
+                if len(stack) > 64:
+                    incomplete()
+            elif char in '}]':
+                if char != stack[-1]:
+                    incomplete()
+                stack.pop()
+                if len(stack) == 1:
+                    if current is None or len(urls) >= MAX_IMAGES:
+                        incomplete()
+                    urls.append(current)
+            elif char in '()`;=/':
+                incomplete()
+            previous = char
+            index += 1
+        incomplete()
+
+
+    values, picture_values = [], []
     identifier = re.compile(r'[A-Za-z_$][A-Za-z0-9_$]*')
     for script in soup.find_all('script'):
         source, index, previous = str(script.string or ''), 0, None
@@ -810,7 +914,7 @@ def _wechat_static_content(soup):
             if token is not None:
                 word = token.group()
                 index += len(word)
-                if word == 'content_noencode' and previous in {'{', ','}:
+                if word in {'content_noencode', 'picture_page_info_list'} and previous in {'{', ','}:
                     tail = index
                     while tail < len(source) and source[tail].isspace():
                         tail += 1
@@ -818,22 +922,35 @@ def _wechat_static_content(soup):
                         tail += 1
                         while tail < len(source) and source[tail].isspace():
                             tail += 1
-                        if source[tail:tail + 1] not in {"'", '"'}:
-                            incomplete()
-                        value, index = literal(source, tail)
+                        if word == 'content_noencode':
+                            if source[tail:tail + 1] not in {"'", '"'}:
+                                incomplete()
+                            value, index = literal(source, tail)
+                        else:
+                            if picture_values:
+                                incomplete()
+                            value, index = picture_pages(source, tail)
                         tail = index
                         while tail < len(source) and source[tail].isspace():
                             tail += 1
                         if source[tail:tail + 1] not in {',', '}'}:
                             incomplete()
-                        values.append(value)
-                        if len(values) > 1:
-                            incomplete()
+                        if word == 'content_noencode':
+                            values.append(value)
+                            if len(values) > 1:
+                                incomplete()
+                        else:
+                            picture_values.append(value)
                 previous = word
             else:
                 previous = char
                 index += 1
-    return BeautifulSoup(values[0], 'html.parser') if values else None
+    if not values and not picture_values:
+        return None
+    content = BeautifulSoup(values[0] if values else '', 'html.parser')
+    for url in picture_values[0] if picture_values else []:
+        content.append(content.new_tag('img', src=url))
+    return content
 
 
 def _html_content(raw, base_url, wechat=False):
@@ -845,12 +962,27 @@ def _html_content(raw, base_url, wechat=False):
         soup.select_one('.infobox .article') or soup.select_one('.v_news_content')
         or soup.select_one('.wp_articlecontent') or soup.select_one('.w-content')
         or soup.select_one('.wzy-content')
+        or soup.select_one('.article_content')
         or soup.select_one('.mn_content .table-style')
-        or soup.find('article') or soup.find('main') or soup.body or soup)
+        or soup.find('article') or soup.select_one('.article.w') or soup.find('main') or soup.body or soup)
     if not wechat:
-        # WebPlus wraps the body in article chrome; do not extract only its
-        # title/publisher/counter when a more specific article body exists.
-        content = content.select_one('.wp_articlecontent') or content
+        article_body = content.select_one('.wp_articlecontent')
+        if article_body is None and 'wp_articlecontent' in content.get('class', []):
+            article_body = content
+        if article_body is not None:
+            article = article_body.find_parent(class_='article')
+            # A single titled article with labelled sibling details owns more
+            # than its rich-text body (including metadata and a sibling poster).
+            # Ordinary WebPlus title/publisher/counter chrome still stays out.
+            structured_article = (
+                article is not None
+                and article.find('h1', recursive=False) is not None
+                and len(article.select('.wp_articlecontent')) == 1
+                and not article.select('article, .article')
+                and any(detail.find_parent(class_='wp_articlecontent') is None
+                        for detail in article.select('.detailbox > .tt + .con'))
+            )
+            content = article if structured_article else article_body
     if wechat:
         # The observed captcha page has no article container. A missing container
         # alone proves neither deletion nor an access gate.
@@ -879,7 +1011,10 @@ def _html_content(raw, base_url, wechat=False):
     title_metadata = soup.find('meta', attrs={'property': 'og:title'}) if wechat else None
     if title_metadata is not None and soup.select_one('#activity-name') is None:
         title = str(title_metadata.get('content') or title)
-    for node in content(['style', 'noscript', 'nav', 'footer', 'header', 'form']):
+    decorations = ['style', 'noscript', 'nav', 'footer', 'form']
+    if content is soup or content is soup.body:
+        decorations.append('header')
+    for node in content(decorations):
         node.decompose()
     images, capture_errors, pdf_sources, skipped_media = [], [], [], []
 
@@ -889,9 +1024,10 @@ def _html_content(raw, base_url, wechat=False):
         except ValueError:
             raise AcquisitionError('公开来源媒体地址格式无效；原始响应已保留。', 'invalid_url') from None
 
-    for viewer in content.select('.wp_pdf_player'):
-        if viewer.get('pdfsrc'):
-            pdf_sources.append(resource_url(viewer['pdfsrc']))
+    for viewer in content.select('.wp_pdf_player, .edui-pdf'):
+        pdf = viewer.get('pdfsrc') or viewer.get('data-pdf')
+        if pdf:
+            pdf_sources.append(resource_url(pdf))
         else:
             capture_errors.append({'stage': 'parse', 'url': base_url, 'code': 'source_incomplete',
                 'message': '嵌入式 PDF 阅读器缺少公开 PDF 地址；未执行脚本或导入不完整正文。'})
@@ -911,15 +1047,36 @@ def _html_content(raw, base_url, wechat=False):
         else:
             images.append(image_url)
 
-    for node in content.find_all(['img', 'script', 'video', 'source', 'iframe', 'object', 'embed']):
+    nodes = content.find_all(True)
+    if content.has_attr('style'):
+        nodes.insert(0, content)
+    for node in nodes:
+        if node.name != 'script' and node.has_attr('style'):
+            for declaration in tinycss2.parse_blocks_contents(node['style'], skip_comments=True, skip_whitespace=True):
+                if declaration.type != 'declaration' or declaration.lower_name != 'background-image':
+                    continue
+                for token in declaration.value:
+                    src = token.value if token.type == 'url' else None
+                    if token.type == 'function' and token.lower_name == 'url':
+                        values = [value for value in token.arguments if value.type not in {'whitespace', 'comment'}]
+                        if len(values) == 1 and values[0].type == 'string':
+                            src = values[0].value
+                    if src and not src.startswith('#'):
+                        add_image(src)
         if node.name == 'script':
             try:
                 images.extend(_pdf_preview_images(node, base_url))
             except AcquisitionError as error:
                 capture_errors.append({'stage': 'parse', 'url': base_url, 'code': error.code, 'message': str(error)})
         elif node.name == 'img':
-            add_image(node.get('data-src') or node.get('src'), node.get('data-type') or node.get('type') or '')
-        else:
+            src = node.get('data-src') or node.get('src')
+            # VSB republishes WeChat articles with a local rendered image but
+            # may leave the original, stale lazy-loading URL in data-src.
+            if (not wechat and str(node.get('src') or '').startswith('/__local/')
+                    and node.find_parent(class_='v_news_content') is not None):
+                src = node['src']
+            add_image(src, node.get('data-type') or node.get('type') or '')
+        elif node.name in {'video', 'source', 'iframe', 'object', 'embed'}:
             src = node.get('data-src') or node.get('src') or node.get('data')
             declared_type = str(node.get('type') or node.get('data-type') or '')
             try:
@@ -1297,6 +1454,32 @@ class _ModelDeadlineSocket:
             view = view[sent:]
 
 
+def _parse_retry_after_seconds(value):
+    """Return a safe positive delay from Retry-After, or None."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if value.isascii() and value.isdigit():
+        try:
+            seconds = float(value)
+        except (OverflowError, ValueError):
+            return None
+    else:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (OverflowError, TypeError, ValueError):
+            return None
+        if not isinstance(retry_at, datetime) or retry_at.utcoffset() is None:
+            return None
+        try:
+            seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (OverflowError, TypeError, ValueError):
+            return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
 def _model_post(payload, *, audit=None):
     """One direct paid POST, retaining bounded original response bytes privately."""
     from nannanews.model_audit import ModelAudit, response_metadata
@@ -1319,6 +1502,9 @@ def _model_post(payload, *, audit=None):
     response = None
     complete = False
     archive_error = None
+    model_http_status = None
+    model_retry_after_seconds = None
+    transport_truncated = False
     try:
         try:
             addresses = _resolve_addresses(parts.hostname, port, budget.remaining())
@@ -1359,6 +1545,10 @@ def _model_post(payload, *, audit=None):
         budget.remaining()
         budget.stage('response_headers')
         response = conn.getresponse()
+        model_http_status = response.status
+        if type(model_http_status) is not int or not 100 <= model_http_status <= 599:
+            model_http_status = None
+        model_retry_after_seconds = _parse_retry_after_seconds(response.getheader('Retry-After'))
         budget.stage('response_body')
         try:
             audit.headers(response)
@@ -1370,13 +1560,16 @@ def _model_post(payload, *, audit=None):
             try:
                 chunk = response.read1(min(65536, MAX_MODEL_BODY + 1 - audit.response_size))
             except http.client.IncompleteRead as error:
+                transport_truncated = True
                 try:
                     audit.append(error.partial[:MAX_MODEL_BODY + 1 - audit.response_size])
                 except Exception as disk_error:
                     archive_error = disk_error
                     raise
-                raise AcquisitionError('模型 API 响应不完整，未创建草稿。', 'model_response_invalid', 502) from None
+                raise AcquisitionError('模型 API 响应不完整，未创建草稿。', 'model_response_invalid', 502,
+                    model_transport_failure=True) from None
             if not chunk:
+                transport_truncated = declared.isdigit() and int(declared) > audit.response_size
                 complete = not declared or (declared.isdigit() and int(declared) == audit.response_size)
                 break
             try:
@@ -1393,10 +1586,15 @@ def _model_post(payload, *, audit=None):
         if archive_error is not None:
             raise AcquisitionError('模型响应已保留，但审计元数据写入失败；不会自动重试。', 'model_audit_failed', 503)
         if response.status != 200:
-            raise AcquisitionError(f'模型 API 返回 HTTP {response.status}；未创建草稿，不会自动重试。', 'model_http_error', 502)
+            raise AcquisitionError(
+                f'模型 API 返回 HTTP {response.status}；未创建草稿，不会自动重试。',
+                'model_http_error', 502, model_http_status=model_http_status,
+                model_retry_after_seconds=model_retry_after_seconds,
+                model_transport_failure=transport_truncated)
         if (audit.response_size > MAX_MODEL_BODY or (declared and
                 (not declared.isdigit() or int(declared) > MAX_MODEL_BODY or int(declared) != audit.response_size))):
-            raise AcquisitionError('模型响应大小无效或响应不完整，未创建草稿。', 'model_response_invalid', 502)
+            raise AcquisitionError('模型响应大小无效或响应不完整，未创建草稿。', 'model_response_invalid', 502,
+                model_transport_failure=transport_truncated)
         if response.getheader('Content-Encoding', 'identity').lower() not in {'identity', ''}:
             raise AcquisitionError('模型 API 返回不支持的压缩响应。', 'model_response_invalid', 502)
         try:
@@ -1426,6 +1624,12 @@ def _model_post(payload, *, audit=None):
             safe_error = AcquisitionError('模型 API 连接或审计写入失败；不会自动重试。', 'model_unavailable', 502)
         else:
             safe_error = AcquisitionError('模型审计写入失败；响应文件保留，不会自动重试。', 'model_audit_failed', 503)
+        if model_http_status is not None:
+            safe_error.model_http_status = model_http_status
+        if model_retry_after_seconds is not None:
+            safe_error.model_retry_after_seconds = model_retry_after_seconds
+        if transport_truncated:
+            safe_error.model_transport_failure = True
         safe_error._model_audit = audit.identity
         if archive_error is not None:
             safe_error._model_audit_finalize_failed = True
@@ -1604,30 +1808,87 @@ def _preview_size(width, height, patches):
 
 
 def _svg_preview(raw, patches):
-    """Render a bounded, static, self-contained SVG subset with no resource access."""
+    """Render bounded static vectors and validated inline PNGs without external access."""
     def unsupported():
         raise AcquisitionError('SVG 包含不安全或不支持的内容；原始证据已保留。', 'image_unsupported')
 
-    def deny_fetch(*args, **kwargs):
-        unsupported()
+    resources = {}
+    embedded_pixels, decoded_bytes = 0, 0
+    max_svg_bytes = 2 * 1024 * 1024
+
+    def inline_png(uri):
+        nonlocal decoded_bytes
+        if uri in resources:
+            return resources[uri]
+        prefix = 'data:image/png;base64,'
+        if not uri.startswith(prefix):
+            unsupported()
+        try:
+            data = base64.b64decode(uri[len(prefix):], validate=True)
+            if (not data.startswith(b'\x89PNG\r\n\x1a\n') or
+                    base64.b64encode(data).decode('ascii') != uri[len(prefix):] or
+                    decoded_bytes + len(data) > max_svg_bytes):
+                unsupported()
+            # Require a complete PNG stream, no animation chunks or trailing payload.
+            offset = 8
+            while offset < len(data):
+                if offset + 12 > len(data):
+                    unsupported()
+                length = int.from_bytes(data[offset:offset + 4], 'big')
+                kind = data[offset + 4:offset + 8]
+                offset += length + 12
+                if offset > len(data) or kind in {b'acTL', b'fcTL', b'fdAT'}:
+                    unsupported()
+                if kind == b'IEND':
+                    if length or offset != len(data) or data[-4:] != b'\xaeB`\x82':
+                        unsupported()
+                    break
+            else:
+                unsupported()
+            with Image.open(io.BytesIO(data), formats=('PNG',)) as image:
+                pixels = image.width * image.height
+                if (image.format != 'PNG' or min(image.size) <= 0 or
+                        pixels > 16_777_216 or embedded_pixels + pixels > 32_000_000 or
+                        image.get_format_mimetype() != 'image/png' or image.n_frames != 1):
+                    unsupported()
+                image.verify()
+            # Verification checks chunk integrity; load also checks the entire pixel stream.
+            with Image.open(io.BytesIO(data), formats=('PNG',)) as image:
+                image.load()
+                try:
+                    image.seek(1)
+                except EOFError:
+                    pass
+                else:
+                    unsupported()
+        except (ValueError, SyntaxError, OSError, EOFError, Image.DecompressionBombError):
+            unsupported()
+        decoded_bytes += len(data)
+        resources[uri] = (data, pixels)
+        return resources[uri]
+
+    def fetch_inline_png(url, resource_type):
+        if resource_type != 'image/*' or url not in resources:
+            unsupported()
+        return resources[url][0]
 
     def check_css(tokens):
         for token in tokens:
             if token.type in {'at-keyword', 'error'}:
                 unsupported()
-            if token.type == 'url' and not re.fullmatch(r'#[A-Za-z_][\w:.-]*', token.value):
+            if token.type == 'url' and not re.fullmatch(r'#(?:[A-Za-z_][\w:.-]*)?', token.value):
                 unsupported()
             if token.type == 'function':
                 if token.lower_name == 'url':
                     value = tinycss2.serialize(token.arguments).strip().strip('\"\'')
-                    if not re.fullmatch(r'#[A-Za-z_][\w:.-]*', value):
+                    if not re.fullmatch(r'#(?:[A-Za-z_][\w:.-]*)?', value):
                         unsupported()
                 else:
                     check_css(token.arguments)
             if hasattr(token, 'content'):
                 check_css(token.content)
 
-    if len(raw) > 2 * 1024 * 1024 or re.search(br'<\?(?!xml(?:\s|\?>))', raw, re.I):
+    if len(raw) > max_svg_bytes or re.search(br'<\?(?!xml(?:\s|\?>))', raw, re.I):
         unsupported()
     try:
         root = SafeXML.fromstring(raw, forbid_dtd=True, forbid_entities=True, forbid_external=True)
@@ -1635,7 +1896,7 @@ def _svg_preview(raw, patches):
         unsupported()
     allowed = {'svg', 'g', 'defs', 'title', 'desc', 'rect', 'circle', 'ellipse', 'line', 'polyline',
                'polygon', 'path', 'text', 'tspan', 'textPath', 'linearGradient', 'radialGradient',
-               'stop', 'clipPath', 'style'}
+               'stop', 'clipPath', 'style', 'image'}
     if root.tag not in {'svg', '{http://www.w3.org/2000/svg}svg'}:
         unsupported()
     pending, nodes = [(root, 0)], 0
@@ -1650,13 +1911,27 @@ def _svg_preview(raw, patches):
         # Patterns/masks/nested SVGs can allocate independent, attacker-sized surfaces.
         if tag not in allowed or (tag == 'svg' and element is not root):
             unsupported()
+        resource = None
         for name, value in element.attrib.items():
             local = name.split('}')[-1].lower()
             if local.startswith('on') or local == 'base':
                 unsupported()
-            if local == 'href' and not re.fullmatch(r'#[A-Za-z_][\w:.-]*', value):
-                unsupported()
+            if local == 'href':
+                if tag == 'image':
+                    if name not in {'href', '{http://www.w3.org/1999/xlink}href'} or resource is not None:
+                        unsupported()
+                    resource = value
+                    continue
+                if not re.fullmatch(r'#[A-Za-z_][\w:.-]*', value):
+                    unsupported()
             check_css(tinycss2.parse_component_value_list(value))
+        if tag == 'image':
+            if resource is None:
+                unsupported()
+            _, pixels = inline_png(resource)
+            embedded_pixels += pixels
+            if embedded_pixels > 32_000_000:
+                unsupported()
         if tag == 'style':
             check_css(tinycss2.parse_component_value_list(element.text or ''))
         pending.extend((child, depth + 1) for child in element)
@@ -1690,17 +1965,17 @@ def _svg_preview(raw, patches):
     size = _preview_size(width, height, patches)
     try:
         raster = PNGSurface.convert(bytestring=raw, output_width=size[0], output_height=size[1],
-                                    parent_width=width, parent_height=height, unsafe=False, url_fetcher=deny_fetch)
+                                    parent_width=width, parent_height=height, unsafe=False, url_fetcher=fetch_inline_png)
     except Exception:
         unsupported()
     working, _ = _raster_preview(raster, 0, patches)
-    return working, math.ceil(width) * math.ceil(height)
+    return working, math.ceil(width) * math.ceil(height) + embedded_pixels
 
 
 def _raster_preview(raw, index, patches):
     """Decode every bounded frame, composing incrementally rather than retaining frames."""
     with warnings.catch_warnings():
-        # Our explicit 100M/frame check is below Pillow's hard bomb-error limit.
+        # The explicit frame guard and Pillow's hard error both cap frames at 400M.
         warnings.simplefilter('ignore', Image.DecompressionBombWarning)
         with Image.open(io.BytesIO(raw), formats=('JPEG', 'PNG', 'WEBP', 'GIF', 'BMP', 'TIFF')) as image:
             # n_frames may enumerate an entire TIFF IFD chain. Inspect at most
@@ -1717,7 +1992,7 @@ def _raster_preview(raw, index, patches):
                 pixels = width * height
                 total_pixels += pixels
                 if width <= 0 or height <= 0 or pixels > MAX_IMAGE_PIXELS or total_pixels > MAX_IMAGE_FRAME_PIXELS:
-                    raise AcquisitionError('图片超过 1 亿像素/帧或 2.56 亿累计帧像素；原始证据已保留。', 'invalid_image')
+                    raise AcquisitionError('图片超过 4 亿像素/帧或 5.12 亿累计帧像素；原始证据已保留。', 'invalid_image')
                 largest_edge = max(largest_edge, width, height)
                 count += 1
             if not count:
@@ -1730,8 +2005,18 @@ def _raster_preview(raw, index, patches):
             try:
                 for frame in range(count):
                     image.seek(frame)
-                    # All frame headers and aggregate pixels passed the bounded preflight.
-                    image.load()
+                    # Reduce single frames before orientation makes a copy. Multi-frame
+                    # decoder canvases must stay intact for disposal/composition.
+                    if count == 1:
+                        size = _preview_size(*image.size, patches)
+                        if image.format == 'JPEG':
+                            image.draft(image.mode, size)
+                        # draft reduces JPEG resolution, not stream validation: still
+                        # load to EOF with Pillow's strict truncation handling.
+                        image.load()
+                        image.thumbnail(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
+                    else:
+                        image.load()
                     with ImageOps.exif_transpose(image) as oriented:
                         size = _preview_size(*oriented.size, patches) if count == 1 else (cell, max(1, cell - 20))
                         oriented.thumbnail(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
@@ -1755,7 +2040,7 @@ def _raster_preview(raw, index, patches):
 
 def _model_images(media):
     """One JPEG preview per source index, including every supported frame/page."""
-    if len(media) > MAX_IMAGES:
+    if len(media) > MAX_MODEL_IMAGES:
         raise AcquisitionError('图片数量超过完整模型输入上限；原始证据已保留。', 'image_unsupported')
     prepared, total_bytes, total_pixels, source_bytes = [], 0, 0, 0
     patches = min(MAX_MODEL_IMAGE_PATCHES, MAX_MODEL_TOTAL_PATCHES // max(1, len(media)))
@@ -1776,7 +2061,7 @@ def _model_images(media):
             try:
                 total_pixels += pixels
                 if total_pixels > MAX_DOCUMENT_FRAME_PIXELS:
-                    raise AcquisitionError('文档累计图片像素超过 5.12 亿；原始证据已保留。', 'image_unsupported')
+                    raise AcquisitionError('文档累计图片像素超过 10.24 亿；原始证据已保留。', 'image_unsupported')
                 for attempt in range(8):
                     output = io.BytesIO()
                     working.save(output, format='JPEG', quality=max(60, 90 - attempt * 5))
@@ -1793,8 +2078,8 @@ def _model_images(media):
                 raise AcquisitionError('完整模型图片输入超过 32 MiB；原始证据已保留，未分批调用模型。', 'image_unsupported')
             prepared.append(dict(original, mime='image/jpeg', data=base64.b64encode(data).decode('ascii'),
                                  digest=hashlib.sha256(data).hexdigest()))
-        except (ValueError, KeyError, TypeError, OSError, EOFError, RecursionError, UnidentifiedImageError,
-                Image.DecompressionBombError, Image.DecompressionBombWarning):
+        except (ValueError, KeyError, IndexError, TypeError, SyntaxError, OSError, EOFError, RecursionError,
+                UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning):
             raise AcquisitionError('图片无法安全完整解码，未发送给模型；原始证据已保留。', 'invalid_image') from None
     return prepared
 
@@ -1836,6 +2121,8 @@ def _request_prepared_model_json(instructions, source_data, media, settings, *, 
         content = [{'type': 'text', 'text': source_text}]
         content.extend({'type': 'image_url', 'image_url': {'url': 'data:' + image['mime'] + ';base64,' + image['data']}} for image in media)
         payload = {'model': settings.model_name, 'messages': [{'role': 'system', 'content': instructions}, {'role': 'user', 'content': content}], 'response_format': {'type': 'json_object'}}
+    payload['tools'] = []
+    payload['tool_choice'] = 'none'
     if response_schema is not None:
         schema_format = {'name': 'historical_evidence_review', 'strict': True, 'schema': response_schema}
         if settings.model_api_style == 'responses':

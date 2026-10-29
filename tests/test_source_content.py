@@ -197,6 +197,81 @@ def test_wechat_image_only_article_retains_order_and_parent_url_identity(monkeyp
     assert base64.b64decode(document['raw_response_base64']) == body
 
 
+def test_svg_background_panels_preserve_article_order_and_exclude_page_chrome(monkeypatch):
+    # Minimized from the retained gala response, raw SHA-256
+    # 43b6d5a4a43f7a6f2d471499d49129c3d245239f0a241d1c4e3e10765e2c782d.
+    url = 'https://mp.weixin.qq.com/s/public-gala'
+    panels = ['https://mmbiz.qpic.cn/panel-one?wx_fmt=png&from=appmsg',
+              'https://mmbiz.qpic.cn/panel-two?wx_fmt=png',
+              'https://mmbiz.qpic.cn/panel-three?wx_fmt=png']
+    body = ('<html><body><svg style="background-image:url(/navigation.png)"></svg>'
+            '<div id="js_content"><svg style="background-image: url(&quot;' + panels[0] + '&quot;)"></svg>'
+            '<img src="' + panels[1] + '"><svg style="background-image:url(' + panels[2] + ')"></svg>'
+            '<svg style="background-image:url(' + panels[0] + ')"></svg>'
+            '<p>文字 | 作者；美编 | 编辑；审核 | 审核人</p></div>'
+            '<script>const example = \'<svg style="background-image:url(/script.png)"></svg>\';</script>'
+            '</body></html>').encode()
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', lambda requested: (body, 'text/html', url))
+    document = acquisition.fetch_document(url)
+    assert document['images'] == panels
+    assert document['capture_complete'] is True
+    assert base64.b64decode(document['raw_response_base64']) == body
+
+
+def test_inline_background_css_urls_preserve_quoted_paths_queries_and_media_policy(monkeypatch):
+    url = 'https://mp.weixin.qq.com/s/static-panels'
+    body = ('<h1 id="activity-name">公开海报</h1><div id="js_content">'
+            '<section style="BACKGROUND-IMAGE: url(\'/poster(one).png?x=1&amp;x=2\'), '
+            'url( /another.png ), url(#local-paint), url(/animation.gif)"></section></div>').encode()
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', lambda requested: (body, 'text/html', url))
+    document = acquisition.fetch_document(url)
+    assert document['images'] == ['https://mp.weixin.qq.com/poster(one).png?x=1&x=2',
+                                  'https://mp.weixin.qq.com/another.png']
+    assert [(item['type'], item['url']) for item in document['skipped_media']] == [
+        ('gif', 'https://mp.weixin.qq.com/animation.gif')]
+    assert document['text'] == ''
+
+
+@pytest.mark.parametrize('url,opening,closing', [
+    ('https://mp.weixin.qq.com/s/header-poster', '<div id="js_content">', '</div>'),
+    ('https://college.nju.edu.cn/article.htm', '<article>', '</article>'),
+])
+def test_article_owned_header_retains_actual_poster_and_event_text(monkeypatch, url, opening, closing):
+    # A retained WeChat notice used a visible header inside #js_content as the
+    # sole poster wrapper; it is article content, unlike the site-level header.
+    body = ('<html><body><header>网站导航<img src="https://static.example.org/navigation.png"></header>'
+            + opening + '<header style="visibility:visible"><section><p>报告时间：2026年5月17日</p>'
+            '<img data-src="https://mmbiz.qpic.cn/original-poster?wx_fmt=png"></section></header>'
+            '<p>文字 | 作者；审核 | 审核人</p>' + closing + '</body></html>').encode()
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', lambda requested: (body, 'text/html', url))
+    document = acquisition.fetch_document(url)
+    assert document['images'] == ['https://mmbiz.qpic.cn/original-poster?wx_fmt=png']
+    assert '报告时间：2026年5月17日' in document['text']
+    assert '网站导航' not in document['text']
+
+
+def test_edui_pdf_poster_is_discovered_only_in_its_owned_article(monkeypatch):
+    url = 'https://math.nju.edu.cn/xsbg/jrbg/20261009/i421788.html'
+    body = ('<html><body><nav><span class="edui-pdf" data-pdf="/navigation.pdf">导航</span></nav>'
+            '<div class="article_content table_style"><h1>公开学术报告</h1><p>'
+            '<span class="edui-pdf" data-pdf="/DFS//file/2026/poster.pdf">学术报告海报</span>'
+            '</p></div></body></html>').encode()
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', lambda requested: (body, 'text/html', url))
+    document = acquisition.fetch_document(url)
+    assert document['pdf_sources'] == ['https://math.nju.edu.cn/DFS//file/2026/poster.pdf']
+    assert '学术报告海报' in document['text']
+    assert '导航' not in document['text']
+
+
+def test_edui_pdf_missing_declared_address_cannot_be_a_complete_capture(monkeypatch):
+    url = 'https://math.nju.edu.cn/report.htm'
+    body = '<article><h1>学术报告海报</h1><span class="edui-pdf">公开海报</span></article>'.encode()
+    monkeypatch.setattr(acquisition, 'fetch_public_resource', lambda requested: (body, 'text/html', url))
+    document = acquisition.fetch_document(url)
+    assert document['capture_complete'] is False
+    assert document['capture_errors'][0]['code'] == 'source_incomplete'
+
+
 def test_wechat_script_generated_layout_is_not_executed_or_replaced_by_body_text(monkeypatch):
     body = ('<html><body><h1>文章标题但没有公开正文</h1><script>'
             'document.write("<div id=js_content>动态正文</div>");'
