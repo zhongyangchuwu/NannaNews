@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block title %}历史刊物附件{% endblock %}
+{% block content %}<div class="page-stack">
+<header class="page-header"><div><h1>历史刊物附件</h1><p>原刊 PDF 属于私有附件与云端资料层，不进入 Git；归档不等于审核或公开发布。</p></div></header>
+<section class="panel stack">
+<form method="get" class="filter-panel" aria-label="检索历史刊物附件">
+<div class="form-field"><label for="document-query">文件名 / 刊期 / 期号 / SHA-256</label><input id="document-query" name="q" type="search" value="{{ result.query }}" maxlength="250" placeholder="例如 2026-10 或 0803.pdf"></div>
+<div class="filter-actions"><button class="button" type="submit">检索附件</button><a href="{{ url_for('reader_review_documents') }}">清除检索</a></div>
+</form>
+<p class="section-note">共 {{ result.total }} 份 PDF · 正文登记刊期倒序 · 仅检索元数据，下载时校验原始字节。</p>
+<div class="reader-review-record-list">{% for row in result['items'] %}<article class="reader-review-record stack">
+<div><h2>{{ row.issue_date or '刊期日期未确认' }}{% if row.issue_number is not none %} · 第 {{ row.issue_number }} 期{% endif %}</h2><p class="break-anywhere">{{ row.filename or '未记录原文件名' }}</p></div>
+{% if row.claimed_date and row.issue_date and row.claimed_date != row.issue_date %}<p class="notice">日期不一致：文件名 / 声称日期 {{ row.claimed_date }}；正文登记日期 {{ row.issue_date }}。原件独立保留，请核对原刊。</p>{% endif %}
+<p class="section-note">{{ (row.size / 1024)|round(1) }} KiB · 解析记录 {{ row.parse_status or '未知' }}（不代表已审核或公开发布）</p>
+<details><summary>文档标识与附件层级</summary><p>SHA-256 <code class="record-id">{{ row.document_id }}</code></p><p>附件按文档内容标识读取，不按日期或期号猜测活动关联；云端位置及凭据不对外公开。</p></details>
+<p><a class="button button-secondary" href="{{ url_for('reader_review_document_pdf', document_id=row.document_id) }}">下载原刊 PDF</a></p>
+</article>{% else %}<p>没有匹配的原刊 PDF。未登记或未完成可信关联的资料不会被猜测补齐。</p>{% endfor %}</div>
+{% if result.page > 1 or result.page * result.per_page < result.total %}<nav class="pagination" aria-label="历史刊物附件翻页">{% if result.page > 1 %}<a class="button button-secondary" href="{{ url_for('reader_review_documents', q=result.query, page=result.page-1) }}">上一页</a>{% endif %}<span>第 {{ result.page }} 页</span>{% if result.page * result.per_page < result.total %}<a class="button button-secondary" href="{{ url_for('reader_review_documents', q=result.query, page=result.page+1) }}">下一页</a>{% endif %}</nav>{% endif %}
+</section></div>{% endblock %}

@@ -1,6 +1,7 @@
 """Reader boundary tests use the real store; only the PDF compiler is replaced."""
 from __future__ import annotations
 
+from contextlib import closing
 import base64
 import json
 import sqlite3
@@ -22,10 +23,12 @@ from nannanews import runtime
 
 @pytest.fixture
 def library(reader):
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         conn.executemany("INSERT INTO users(username,password,role) VALUES(?,?,?)",
                          [(role, "unused-password-hash", role) for role in ("admin", "editor", "member")])
     reader.register_blueprint(information_reader.bp)
+    from nannanews.web import reader_review
+    reader_review.register(reader)
     reader.add_url_rule("/logout", endpoint="logout", view_func=lambda: "logout", methods=["POST"])
     reader.add_url_rule("/workbench", endpoint="main", view_func=lambda: "workbench")
     for source_id, college in (("science", "物理学院"), ("arts", "文学院")):
@@ -54,7 +57,7 @@ def capture(app, *, entry_id=None, source="science", source_date="2026-10-10", e
                     if record["document_id"] == document["id"])
     app.add_entry(entry_id, title=title, description=description, status=status, publish_date=date.today().isoformat())
     record = information.get_entry_record(entry_id)
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         conn.execute("UPDATE information_records SET document_id=?,event_date=?,deadline_date=?,model_status='completed',evidence_quotes_json=? WHERE id=?",
                      (document["id"], event_date, deadline_date,
                       json.dumps([{"text": "private-model-evidence", "image_index": None}]), record["id"]))
@@ -96,7 +99,7 @@ def test_deleted_user_session_cannot_continue_reading(library):
     client = library.test_client()
     login(client)
     assert client.get("/api/library").status_code == 200
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         conn.execute("DELETE FROM users WHERE username='member'")
     assert client.get("/api/library").status_code == 401
 
@@ -346,7 +349,7 @@ def test_source_ledger_rejects_invalid_query_values(library, query):
 
 def test_source_page_without_daily_schema_is_read_only_and_truthful(library):
     daily_tables = {"daily_runs", "daily_source_runs", "daily_links", "daily_pages", "daily_source_state"}
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         before_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         before_counts = {name: conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
                          for name in daily_tables.intersection(before_tables)}
@@ -354,7 +357,7 @@ def test_source_page_without_daily_schema_is_read_only_and_truthful(library):
     login(client)
     response = client.get("/library/sources")
     assert response.status_code == 200
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         after_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         after_counts = {name: conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
                         for name in daily_tables.intersection(after_tables)}
@@ -424,7 +427,7 @@ def test_export_over_limit_rejects_instead_of_truncating(library, monkeypatch):
     assert response.status_code == 400
     assert calls == []
     assert client.get("/api/library").get_json()["total"] == 501
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         conn.execute("DELETE FROM entries WHERE id=501")
     def compile_pdf(records, filters, pdf_path):
         calls.append(records)
@@ -538,7 +541,7 @@ def test_date_kinds_use_their_own_metadata_and_legacy_exact_date(library, date_t
 def test_failed_extraction_keeps_actual_original_queryable(library):
     record_id = capture(library, title="Failed extraction original", source_date=None, text="尚未提取成功的完整原文")
     record = information.get_record(record_id)
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         conn.execute("UPDATE source_documents SET model_status='failed',model_error='model_response_invalid' WHERE id=?", (record["document_id"],))
     client = library.test_client()
     login(client)
@@ -559,7 +562,7 @@ def test_failed_extraction_keeps_actual_original_queryable(library):
 
 def test_detail_never_labels_raw_only_activity_as_model_success(library):
     record_id = capture(library, entry_id=902, title="Raw-only record")
-    with runtime.connect_db() as conn:
+    with closing(runtime.connect_db()) as conn, conn:
         conn.execute("UPDATE information_records SET model_status='history_deferred' WHERE id=?", (record_id,))
     client = library.test_client()
     login(client)

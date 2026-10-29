@@ -24,6 +24,8 @@
         <a href="{{ url_for('public_reader.sources') }}">公开来源</a>
         {% if user_role in ['admin','editor','member'] %}
           {% if user_role in ['admin','editor'] %}<a href="{{ url_for('main') }}">编辑工作台</a>{% endif %}
+          {% if user_role in ['admin','editor'] %}<a href="{{ url_for('reader_review_activities') }}"{% if request.endpoint in ['reader_review_activities', 'reader_review_activity', 'reader_review_reviews', 'reader_review_trace', 'reader_review_source', 'reader_review_new', 'reader_review_run', 'reader_review_unavailable', 'reader_review_publish', 'reader_review_artifact', 'reader_review_prepared_image', 'reader_review_image'] %} aria-current="page"{% endif %}>人工核查</a>{% endif %}
+          {% if user_role in ['admin','editor'] %}<a href="{{ url_for('reader_review_documents') }}"{% if request.endpoint == 'reader_review_documents' %} aria-current="page"{% endif %}>历史刊物附件</a>{% endif %}
           <form method="post" action="{{ url_for('logout') }}" class="nav-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="nav-button" type="submit">退出登录</button>

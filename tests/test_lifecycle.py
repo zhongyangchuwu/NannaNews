@@ -82,10 +82,9 @@ def test_prepare_is_explicit_and_does_not_create_a_database(unprepared):
     assert first.data_dir.stat().st_mode & 0o777 == 0o700
 
 
-def test_migrate_command_bootstraps_all_domains_but_no_admin(unprepared, capsys):
+def test_migrate_command_bootstraps_all_domains_but_no_admin(unprepared):
     from nannanews import cli, schema
     assert cli.main(["migrate"]) == 0
-    assert "version 1" in capsys.readouterr().out
     assert schema.require_schema() == schema.CURRENT_VERSION
     with closing(unprepared.connect_db()) as db:
         assert db.execute("SELECT count(*) FROM users").fetchone()[0] == 0

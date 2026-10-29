@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block title %}私有登记活动 · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="page-stack">
+<nav class="reader-review-nav" aria-label="页面导航"><a class="button button-secondary" href="{{ url_for('reader_review_activities', q=review_queue_context.queue_q, status=review_queue_context.queue_status, page=review_queue_context.queue_page) }}">返回核查队列</a></nav>
+<header class="page-header"><div><h1>私有登记活动与来源</h1><p>登记不会抓取来源、调用模型或发布。身份使用稳定登记标识，不按标题、日期或 URL 猜测合并；请勿在标识中填写密码。</p></div></header>
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" class="panel stack">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>私有稳定登记标识<input name="registration_key" value="{{ registration_key }}" maxlength="250" required></label>
+{% for name, label, limit in fields %}<label>{{ label }}<textarea name="{{ name }}" maxlength="{{ limit }}"{% if name in ['title','content'] %} required{% endif %}>{{ submitted.get(name, '') }}</textarea></label>{% endfor %}
+<label>公开来源 URL（每行一条，仅登记，不访问）<textarea name="source_urls">{{ submitted.get('source_urls', '') }}</textarea></label>
+<label>初始人工状态<select name="status"><option value="needs_review">仍待核对</option><option value="verified"{% if submitted.get('status') == 'verified' %} selected{% endif %}>人工核实</option></select></label>
+<label>拟公开说明<textarea name="reason" maxlength="2000" required>{{ submitted.get('reason', '') }}</textarea></label>
+<p>此步骤仅保存私有登记内容；进入活动页后可添加日期、修订和原始核查记录关联，明确保存后才进入管理员发布范围。独立收录不会伪装成某期刊物。</p>
+<button class="button" type="submit">私有登记（不发布）</button>
+</form>
+</div>
+{% endblock %}

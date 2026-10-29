@@ -5,7 +5,7 @@ from datetime import timedelta
 from flask import Flask
 
 from nannanews import acquisition, information_reader, public_reader, runtime, schema
-from . import administration, auth, editorial, intake, publication, security
+from . import administration, auth, editorial, intake, publication, reader_review, security
 
 
 def create_app():
@@ -32,6 +32,7 @@ def create_app():
     editorial.register(app)
     administration.register(app)
     publication.register(app)
+    reader_review.register(app)
     acquisition.register(app)
     app.register_blueprint(public_reader.bp)
     app.register_blueprint(information_reader.bp)

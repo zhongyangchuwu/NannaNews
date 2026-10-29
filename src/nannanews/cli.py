@@ -622,6 +622,12 @@ def main(argv=None):
     sub = commands.add_parser('export-public-facts', help='Export small reviewed public facts for Git; no private runtime or cloud access')
     sub.add_argument('source_dir', type=Path, help='Published public reader pack')
     sub.add_argument('output', type=Path, help='Small activity-facts.json destination')
+    sub = commands.add_parser('review-activity', help='Explicitly acquire and review one private registered activity; never publish')
+    sub.add_argument('item_id')
+    sub.add_argument('--actor', required=True)
+    sub.add_argument('--foundation-root', required=True, type=Path)
+    sub.add_argument('--allow-fetch', action='store_true', help='Authorize fetching registered public sources')
+    sub.add_argument('--allow-paid', action='store_true', help='Authorize one canonical paid model attempt, never replay')
     foundation = commands.add_parser('data-foundation', help='Prepare and verify private activity data; never switch services or call models')
     foundation_actions = foundation.add_subparsers(dest='foundation_action', required=True)
     build = foundation_actions.add_parser('build', help='Import reviewed activity identities and offline original-source evidence')
@@ -684,6 +690,14 @@ def main(argv=None):
         elif args.command == 'export-public-facts':
             from nannanews.public_metadata_export import export_public_facts
             print(json.dumps(export_public_facts(args.source_dir, args.output), ensure_ascii=False, indent=2))
+        elif args.command == 'review-activity':
+            from nannanews.reader_activity_review import review_registered_activity
+            from nannanews.reader_reviews import ReviewStore
+            result = review_registered_activity(store=ReviewStore(), item_id=args.item_id, actor=args.actor,
+                allow_fetch=args.allow_fetch, allow_paid=args.allow_paid, foundation_root=args.foundation_root)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if result.get('state') != 'reviewed':
+                return 1
         elif args.command == 'data-foundation':
             from nannanews import data_foundation
             root = args.root.expanduser().absolute()

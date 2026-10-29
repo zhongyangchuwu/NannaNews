@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}人工核查 · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="page-stack">
+  <header class="page-header"><div><p class="eyebrow">私有控制台</p><h1>活动人工核查</h1><p>按活动查看全部刊载记录。保存只建立私有修订；公开阅读页须管理员另行发布。</p></div></header>
+  <section class="notice"><p><strong>一次修改会影响同一活动的全部期次。</strong>浏览、关联与保存不会抓取来源或调用模型；来源读取和可能收费的核查必须另行明确授权。原刊与 AI 证据保持不变。</p></section>
+  <p><a class="button button-secondary" href="{{ url_for('reader_review_new', **review_queue_context) }}">登记私有活动</a></p>
+  <form method="get" class="filter-panel" aria-label="筛选活动">
+    <div class="form-field"><label for="review-query">标题 / 原刊摘要关键词</label><input id="review-query" name="q" value="{{ result.q }}" type="search"></div>
+    <div class="form-field"><label for="review-status">问题 / 保存状态</label><select id="review-status" name="status">{% for value, label in status_options %}<option value="{{ value }}"{% if result.status == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+    <div class="filter-actions"><button class="button" type="submit">筛选</button><a href="{{ url_for('reader_review_activities') }}">重置</a></div>
+  </form>
+  {% if result.q %}<div class="active-filters" aria-label="当前筛选条件"><span>关键词：{{ result.q }}</span><a href="{{ url_for('reader_review_activities', status=result.status) }}">清除关键词</a></div>{% endif %}
+  <div class="results-summary"><h2>共 {{ result.total }} 个活动</h2><p>第 {{ result.page }} / {{ result.pages or 1 }} 页 · 过期本身不等于事实错误</p></div>
+  {% if result['items'] %}
+  <div class="stack">
+    {% for item in result['items'] %}
+    <article class="panel reader-review-record">
+      <div class="section-header"><div><h3><a href="{{ url_for('reader_review_activity', item_id=item.item_id, **review_queue_context) }}">{{ item.title }}</a></h3><p class="section-note">{{ '保留的历史记录' if item.get('removed') else '同一活动' }}共 {{ item.occurrence_count }} 条刊载记录 · <code class="record-id">{{ item.item_id }}</code></p></div><a class="button button-secondary" href="{{ url_for('reader_review_activity', item_id=item.item_id, **review_queue_context) }}">{{ '核对历史 / 停用' if item.get('removed') else '核查 / 编辑' }}</a></div>
+      <div class="section-actions">
+        {% for status in item.content_statuses %}<span class="status-badge status-neutral">{{ status_labels.get(status, status) }}</span>{% endfor %}
+        {% for status in item.problem_statuses %}{% if status not in item.content_statuses %}<span class="status-badge status-unverified">{{ status_labels.get(status, status) }}</span>{% endif %}{% endfor %}
+        {% if item.get('removed') %}<span class="status-badge status-error">来源已移除 / 合并</span>{% if item.get('retired') %}<span class="status-badge status-neutral">已确认停用当前历史修订</span>{% else %}<span class="section-note">须管理员明确确认停用后，才不再阻止其他活动发布。</span>{% endif %}{% elif item.stale %}<span class="status-badge status-error">来源版本已变化，须重新核对</span>{% endif %}
+        {% if not item.get('retired') %}{% if item.unpublished %}<span class="status-badge status-unverified">已保存 · 未发布</span>{% elif item.head_revision and item.head_revision == item.published_revision %}<span class="status-badge status-success">当前修订已发布</span>{% elif not item.head_revision %}<span class="status-badge status-neutral">尚无人工修订</span>{% endif %}{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}<section class="empty-state"><h2>当前筛选没有活动</h2><p>请调整关键词或状态。此处只读取已配置目录，不抓取来源或调用模型。</p></section>{% endif %}
+  <nav class="pagination" aria-label="活动列表翻页">
+    {% if result.page > 1 %}<a class="button button-secondary" href="{{ url_for('reader_review_activities', q=result.q, status=result.status, page=result.page - 1) }}">上一页</a>{% endif %}
+    <span>第 {{ result.page }} / {{ result.pages or 1 }} 页</span>
+    {% if result.page < result.pages %}<a class="button button-secondary" href="{{ url_for('reader_review_activities', q=result.q, status=result.status, page=result.page + 1) }}">下一页</a>{% endif %}
+  </nav>
+  {% include 'reader_review_publish_controls.html' %}
+</div>
+{% endblock %}

@@ -9,7 +9,7 @@ import sqlite3
 
 from nannanews import runtime
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 3
 
 
 def open_database(*, readonly=False, create=False):
@@ -87,12 +87,19 @@ def migrate():
             version = _version(connection)
             if version > CURRENT_VERSION:
                 require_schema(connection)
-            if version < CURRENT_VERSION:
+            if version < 1:
                 runtime._migrate_core(connection)
                 acquisition._migrate_schema(connection)
                 information._migrate_schema(connection)
                 bulletin_store._migrate_schema(connection)
                 daily_acquisition._migrate_schema(connection)
+            if version < 2:
+                from nannanews.reader_reviews import _migrate_schema
+                _migrate_schema(connection)
+            if version < 3:
+                from nannanews.reader_reviews import _migrate_private_schema
+                _migrate_private_schema(connection)
+            if version < CURRENT_VERSION:
                 connection.execute("CREATE TABLE IF NOT EXISTS nannanews_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL)")
                 connection.execute("INSERT INTO nannanews_schema(id,version) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version", (CURRENT_VERSION,))
     _seed_catalog()

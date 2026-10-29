@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block title %}显式核查执行结果 · {{ site_name }}{% endblock %}
+{% block content %}<div class="page-stack">
+<nav class="reader-review-nav" aria-label="页面导航"><a class="button button-secondary" href="{{ url_for('reader_review_activity', item_id=item_id, **review_queue_context) }}">返回活动编辑</a><a class="button button-secondary" href="{{ url_for('reader_review_reviews', item_id=item_id, **review_queue_context) }}">查看私有核查记录</a></nav>
+<header class="page-header"><div><h1>显式来源读取与模型核查结果</h1><p>核查不会保存活动事实、批准、发布或推送云端。请先查看原始输入、响应、判断和错误，再由人工决定是否编辑与保存。</p></div></header>
+{% if error %}<section class="notice notice-error" role="alert"><h2>流程未完整完成</h2><p>{{ error }}</p><p>不要直接重复提交。先核对本活动私有证据与付费尝试记录；不能通过清除记录再次请求。</p></section>{% endif %}
+{% if result %}<section class="panel stack"><h2>{{ '核查完成（不等于人工核实）' if result.state == 'reviewed' else '核查未成功完成；原始记录已保留' }}</h2><dl class="detail-list"><div><dt>执行状态</dt><dd>{{ result.state }}</dd></div><div><dt>原始判断状态</dt><dd>{{ result.decision_status }}</dd></div><div><dt>本次是否产生模型请求尝试</dt><dd>{{ '是；不代表响应完整或事实已确认' if result.new_request else '否；不授权自动重试' }}</dd></div><div><dt>记录的原因</dt><dd class="preserve-lines">{{ result.reason }}</dd></div></dl>
+<h3>本次明确关联的原始核查记录</h3><ul>{% for review_id in result.review_ids %}<li><a href="{{ url_for('reader_review_trace', item_id=item_id, review_id=review_id, **review_queue_context) }}">{{ review_id }}</a></li>{% endfor %}</ul>
+{% if result.state != 'reviewed' %}<p class="notice notice-error">失败、来源缺失或付费准入拒绝不是成功，也不是自动重试的授权。请先阅读上述原始记录。</p>{% endif %}
+</section>{% endif %}
+</div>{% endblock %}

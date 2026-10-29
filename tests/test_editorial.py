@@ -202,7 +202,8 @@ def test_packaged_templates_assets_and_current_settings(editorial, monkeypatch):
     admin = authenticated.get('/admin')
     assert admin.status_code == 200
     assert b'/send_email' not in admin.data
-    assert authenticated.get('/static/app.css').status_code == 200
+    with authenticated.get('/static/app.css') as asset:
+        assert asset.status_code == 200
 
 
 def test_retired_email_and_sync_routes_are_absent(editorial):

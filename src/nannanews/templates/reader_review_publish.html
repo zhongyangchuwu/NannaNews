@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block title %}发布结果 · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="page-stack"><header class="page-header"><div><h1>发布尚未完整完成</h1><p>私有保存记录仍保留。不要将本次结果理解为所有公开页面已经同步。</p></div></header>
+<div class="notice notice-error" role="alert"><p>{{ error }}</p></div>
+{% if result %}<section class="panel"><h2>本次同步状态</h2><dl class="detail-list">
+<div><dt>生成版本</dt><dd>{{ result.get('version') or '尚未生成' }}</dd></div>
+<div><dt>公开数据源</dt><dd>{{ '已切换公开版本' if result.get('source_published') else '本次未确认切换' }}</dd></div>
+<div><dt>部署站点数据</dt><dd>{{ '已切换公开版本' if result.get('site_published') else '本次未确认切换' }}</dd></div>
+<div><dt>分享页</dt><dd>{{ '已更新' if result.get('share_updated') else '本次未确认更新' }}</dd></div>
+<div><dt>私有发布记录</dt><dd>{{ '已记入' if result.get('recorded') else '未记为完整发布' }}</dd></div>
+</dl>{% if result.get('partial') %}<p class="notice">部分公开版本可能已切换。请按错误提示修复配置或目标目录，再显式重试以完成同步；系统不会自动重试。</p>{% endif %}</section>{% endif %}
+<a href="{{ url_for('reader_review_activities', status='unpublished') }}">返回已保存未发布活动</a>
+{% include 'reader_review_publish_controls.html' %}
+</div>
+{% endblock %}

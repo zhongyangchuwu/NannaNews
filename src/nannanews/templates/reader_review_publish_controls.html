@@ -1,0 +1,10 @@
+{% if user_role == 'admin' %}
+<section class="panel reader-review-publish"><h2>管理员显式发布</h2><p><strong>发布会同步所有活动的最新已保存修订</strong>到公开阅读页、搜索和分享页，不仅是当前活动。未保存的输入不会发布；来源已变化的旧修订须先重新核对。已移除 / 合并活动的旧修订须由管理员单独确认停用；历史仍保留。发布不抓取来源或调用模型。</p><p>若上次发布部分完成，重试会先完成其已记录的修订快照；其后保存的新修订仍保持未发布，须再次单独发布。</p>
+  <form method="post" action="{{ url_for('reader_review_publish') }}" class="stack" data-submit-once data-submit-message="正在发布并同步搜索与分享页，请等待本次结果，不要重复提交。">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label><input type="checkbox" name="confirm_publish" value="yes" required> 我确认公开发布已保存的人工修订及其公开说明；若有未完成的发布，先恢复其已记录快照。</label>
+    <div><button class="button" type="submit">发布已保存修改</button></div>
+    <p class="section-note" role="status" data-submit-status>发布将同步生成搜索和分享页；提交后请等待本次结果，不要重复提交。</p>
+  </form>
+</section>
+{% else %}<section class="notice"><p>你可以保存人工修订；公开发布须由管理员在控制台单独确认。保存本身不会更新公开阅读页。</p></section>{% endif %}

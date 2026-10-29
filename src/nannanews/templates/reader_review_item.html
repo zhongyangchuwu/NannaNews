@@ -1,0 +1,118 @@
+{% extends 'base.html' %}
+{% block title %}核查 {{ item.title }} · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="page-stack">
+  <nav class="reader-review-nav" aria-label="页面导航"><a class="button button-secondary" href="{{ url_for('reader_review_activities', q=review_queue_context.queue_q, status=review_queue_context.queue_status, page=review_queue_context.queue_page) }}">返回核查队列</a></nav>
+  <header class="page-header"><div><p class="eyebrow">私有人工修订</p><h1>{{ item.title }}</h1><p><code class="record-id">{{ item.item_id }}</code> · {% if item.get('registration') %}独立活动记录{% if not item.published_revision %}（尚未公开）{% endif %}{% else %}共 {{ item.occurrences|length }} 条{{ '保留的旧版' if item.get('removed') else '' }}刊载记录{% endif %}</p></div>{% if reader_href and not item.get('removed') and (item.initial_source != 'private_registration' or item.published_revision) %}<a class="button button-secondary" href="{{ reader_href }}" target="_blank" rel="noopener noreferrer">查看当前公开阅读页</a>{% endif %}</header>
+  {% if not reader_href and not item.get('removed') %}<p class="notice">尚未配置公开阅读页地址；管理员可设置 <code>NANNA_READER_URL</code> 后启用阅读页链接。核查保存仍可使用，不会猜测链接地址。</p>{% endif %}
+  {% if item.get('removed') %}<section class="notice notice-error"><h2>当前来源已移除 / 合并此活动</h2><p>此处只保留历史修订与能安全读取的旧原刊证据，不是当前公开活动。不能保存普通编辑，也不会自动停用。{% if item.get('retired') %}管理员已明确确认停用当前历史修订；此修订不再阻止其他活动发布，历史不会删除。{% else %}当前历史修订仍会阻止发布；须由管理员核对后，单独确认停用这一修订。{% endif %}</p></section>{% else %}
+  <section class="notice"><p><strong>一次修改会影响同一活动的全部期次。</strong>保存只新增私有修订；公开阅读、搜索和分享页须管理员另行发布。原刊、来源和 AI 证据不会覆盖。无人工确认日期时请移除全部日期行；不完整日期会阻止保存；“仍待核对”不会确认活动日期。</p></section>
+  {% endif %}
+  <p><a class="button button-secondary" href="{{ url_for('reader_review_reviews', item_id=item.item_id, **review_queue_context) }}">查看私有核查记录</a></p>
+  {% if item.initial_source == 'private_registration' %}<p class="notice">此活动为私有登记 / 尚未公开收录。登记内容不是原刊证据；请明确保存修订后交由管理员发布，独立收录不会伪装成某期刊物。</p>{% endif %}
+  <div class="section-actions">
+    {% if item.get('removed') %}<span class="status-badge status-error">来源已移除 / 合并</span>{% if item.get('retired') %}<span class="status-badge status-neutral">已确认停用当前历史修订</span>{% endif %}{% elif item.stale %}<span class="status-badge status-error">来源版本已更新，旧修订须重新核对</span>{% endif %}
+    {% if not item.get('retired') %}{% if item.unpublished %}<span class="status-badge status-unverified">已保存 · 未发布</span>{% elif item.head_revision and item.head_revision == item.published_revision %}<span class="status-badge status-success">当前已保存修订已发布</span>{% else %}<span class="status-badge status-neutral">尚无人工修订</span>{% endif %}{% endif %}
+    {% if item.head_revision %}<span class="section-note">最新保存修订：<code class="record-id">{{ item.head_revision[:12] }}</code></span>{% endif %}
+  </div>
+  {% if error %}<section class="notice notice-error" role="alert"><h2>请核对后继续</h2><p>{{ error }}</p><p>下方保留了本次输入，未因错误替换成服务器内容。除明确提示“已保存”外，这些输入没有保存。</p></section>{% endif %}
+  {% if item.get('registration') and not item.get('removed') %}
+  <section class="panel stack"><h2>付费来源核查（需明确授权）</h2>
+    <p><strong>本操作会读取已登记的公开来源并可能产生模型费用；失败也可能收费。</strong>仅使用最新已保存修订（无修订时使用私有登记内容）的来源 URL 和稳定身份；未保存输入不会发送。付费尝试不会清除或自动重试；本操作不保存活动事实、不批准、不发布，也不推送云端。</p>
+    {% if review_available %}<form method="post" action="{{ url_for('reader_review_run', item_id=item.item_id, **review_queue_context) }}" class="stack" data-submit-once data-submit-message="正在读取已登记来源并执行本次核查，请等待结果；不要重复提交。">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label><input type="checkbox" name="confirm_fetch" value="yes" required> 我明确授权读取此活动已登记的公开来源。</label>
+      <label><input type="checkbox" name="confirm_paid" value="yes" required> 我明确授权本次可能收费的模型核查，理解失败也可能产生费用；不会重置付费记录或自动重试。</label>
+      <button class="button button-secondary" type="submit">明确读取来源并核查（可能收费，不发布）</button>
+      <p class="section-note" role="status" data-submit-status>本次尝试可能收费；提交后不会自动重试。</p>
+    </form>{% else %}<p class="notice">{{ review_unavailable or '尚未配置本地私有资料库 NANNA_READER_EVIDENCE_DIR。' }}</p>{% endif %}
+  </section>
+  {% endif %}
+  <div class="reader-review-layout">
+    {% if item.get('removed') %}
+    <section class="panel stack">
+      <h2>最后保存的历史修订（只读）</h2>
+      {% set historical = item.head.payload %}
+      <p>核查结论：{{ '人工核实' if historical.status == 'verified' else '仍待核对' }}</p><p class="preserve-lines"><strong>原公开说明：</strong>{{ historical.reason }}</p>
+      <dl class="detail-list">{% for name, label, limit in text_fields %}<div><dt>{{ label }}</dt><dd class="preserve-lines">{{ historical.activity.get(name) or '未填写' }}</dd></div>{% endfor %}</dl>
+      <section><h3>历史人工确认日期</h3><ul>{% for row in historical.activity.dates %}<li>{{ dict(date_kinds).get(row.kind, row.kind) }} · {{ row.date }}</li>{% else %}<li>未确认日期</li>{% endfor %}</ul></section>
+      <section><h3>历史人工来源链接</h3><ul>{% for raw in historical.activity.source_urls %}{% set href = safe_http_url(raw) %}<li>{% if href %}<a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ raw }}</a>{% else %}<span class="break-anywhere">{{ raw }}（非安全公开 HTTP(S) 链接，仅显示文字）</span>{% endif %}</li>{% else %}<li>未填写来源</li>{% endfor %}</ul></section>
+      {% if error and payload != historical %}<details><summary>本次普通编辑输入（已拒绝保存）</summary>{% for name, label, limit in text_fields %}<h3>{{ label }}</h3><p class="preserve-lines">{{ payload.activity.get(name) or '' }}</p>{% endfor %}<p class="preserve-lines">{{ payload.reason }}</p><p>{{ payload.status }}</p><pre class="evidence-text">{{ payload.activity.dates }}</pre><pre class="evidence-text">{{ payload.activity.source_urls|join('\n') }}</pre></details>{% endif %}
+      {% if not item.get('retired') %}
+        {% if user_role == 'admin' %}
+        <form method="post" class="stack" aria-label="确认停用已移除活动的历史修订">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="expected_head" value="{{ expected_head }}">
+          <input type="hidden" name="base_version" value="{{ base_version }}">
+          <h3>管理员单独确认停用</h3><p>只停用当前历史修订 <code class="record-id">{{ expected_head[:12] }}</code>，不删除记录、不修改公开内容、不发布。以后若出现新的修订，不会自动沿用本次确认。</p>
+          {% if conflict %}<p class="notice notice-error">来源或修订已再次变化。下方保留本次原因与旧版本标识；请先重新载入最新历史，重新核对后再确认，不能自动接受新版本。</p>{% endif %}
+          <div class="form-field"><label for="retirement-reason">私有停用原因（必填，不公开）</label><textarea id="retirement-reason" name="retirement_reason" rows="4" required>{{ retirement_reason }}</textarea><span class="section-note">最多 2000 字，说明移除 / 合并与本次确认依据；只留在私有审计记录。</span></div>
+          <label><input type="checkbox" name="acknowledge_retirement" value="yes" required{% if retirement_acknowledged %} checked{% endif %}> 我已核对当前来源与历史，确认此活动已移除 / 合并，并只停用上述历史修订。</label>
+          <div><button class="button button-secondary" type="submit" name="action" value="retire_removed">确认停用此历史修订（不发布）</button></div>
+          <p class="section-note">核对来源版本 <code class="record-id">{{ base_version }}</code>；<a href="{{ url_for('reader_review_activity', item_id=item.item_id, **review_queue_context) }}">重新载入最新历史（放弃本次输入）</a>。</p>
+        </form>
+        {% else %}<p class="notice">仅管理员可明确确认停用；请管理员在此页面核对历史并填写私有原因。你不能保存或停用此已移除活动。</p>{% endif %}
+      {% endif %}
+    </section>
+    {% else %}
+    <form method="post" class="panel stack" id="reader-review-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="expected_head" value="{{ expected_head }}">
+      <input type="hidden" name="base_version" value="{{ base_version }}">
+      <input type="hidden" name="rebase_head" value="{{ item.head_revision or '' }}">
+      <input type="hidden" name="rebase_base" value="{{ item.base_version }}">
+      <section><h2>可公开的活动内容</h2>{% if not item.head and item.get('initial_source') == 'original_excerpt' %}<p class="notice">尚无已获准采用的活动整理内容，初始字段来自原刊摘录，不代表已核实。请对照右侧来源自行确认，不会自动抓取或生成补充文字。</p>{% endif %}<p class="section-note">未知的可选字段留空。下方正文和公开说明对所有读者可见，请勿填入私人联系方式、账号或内部审计信息。</p></section>
+      {% for name, label, limit in text_fields %}
+      <div class="form-field"><label for="review-{{ name }}">{{ label }}{% if name in ['title', 'content'] %}（必填）{% endif %}</label>
+        {% if name in ['summary', 'content', 'audience', 'participation', 'time'] %}<textarea id="review-{{ name }}" name="{{ name }}" rows="{{ 18 if name == 'content' else 4 }}"{% if name == 'content' %} required{% endif %}>{{ payload.activity.get(name) or '' }}</textarea>{% else %}<input id="review-{{ name }}" name="{{ name }}" value="{{ payload.activity.get(name) or '' }}"{% if name == 'title' %} required{% endif %}>{% endif %}
+        <span class="section-note">最多 {{ limit }} 字</span>
+      </div>
+      {% endfor %}
+      <section class="stack"><div><h3>人工确认的日期</h3><p class="section-note">每行一个真实日期；活动可有多天。不要把刊载日期、推测日期当成活动日期。最多 100 行，重复的同类同日会合并。</p></div>
+        <div data-date-rows class="stack">
+        {% for row in payload.activity.dates %}<div class="reader-review-date-row"><label>日期类型<select name="date_kind" class="form-control">{% if row.kind not in dict(date_kinds) %}<option value="{{ row.kind }}" selected>无效类型：{{ row.kind }}</option>{% endif %}{% for value, label in date_kinds %}<option value="{{ value }}"{% if row.kind == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><label>日期（YYYY-MM-DD）<input name="date_value" class="form-control" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" value="{{ row.date }}"></label><button class="button button-secondary" type="button" data-remove-date>移除此日期</button></div>{% endfor %}
+        </div>
+        <div><button class="button button-secondary" type="button" data-add-date>添加日期</button></div><p class="section-note" data-date-feedback role="status"></p>
+        <template id="review-date-template"><div class="reader-review-date-row"><label>日期类型<select name="date_kind" class="form-control">{% for value, label in date_kinds %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label><label>日期（YYYY-MM-DD）<input name="date_value" class="form-control" type="text" inputmode="numeric" placeholder="YYYY-MM-DD"></label><button class="button button-secondary" type="button" data-remove-date>移除此日期</button></div></template>
+      </section>
+      <div class="form-field"><label for="review-sources">人工确认的来源链接（每行一个）</label><textarea id="review-sources" name="source_urls" rows="5">{{ payload.activity.source_urls|join('\n') }}</textarea><span class="section-note">仅公开 HTTP(S) 链接，最多 100 条。不得填写凭据、内网或本机地址；不要编造来源。原有引用仍在只读证据区保留。</span></div>
+      <div class="form-field"><label for="review-decision">人工核查结论</label><select id="review-decision" name="status" required>{% if payload.status not in ['verified', 'needs_review'] %}<option value="{{ payload.status }}" selected>无效结论：{{ payload.status }}</option>{% endif %}<option value="needs_review"{% if payload.status == 'needs_review' %} selected{% endif %}>仍待核对（不作为已确认活动）</option><option value="verified"{% if payload.status == 'verified' %} selected{% endif %}>已人工核实（确认上述文字与日期）</option></select></div>
+      <div class="form-field"><label for="review-reason">公开更正 / 核查说明（必填，读者可见）</label><textarea id="review-reason" name="reason" rows="5" required>{{ payload.reason }}</textarea><span class="section-note">说明修改原因、已核实的范围或仍有疑问的部分。最多 2000 字；不要填内部用户名、私人资料或秘密。</span></div>
+      {% if conflict %}<section class="notice notice-error stack"><h3>并发修改 / 来源更新：显式重新核对</h3><p>服务器最新修订与本次输入的差异在下方列出；右侧为当前来源原刊。不会自动覆盖任何已保存修订。</p>
+        {% for change in comparison %}<details open><summary>{{ change.label }} · 最新保存 → 本次输入</summary><pre class="reader-review-diff">{{ change.diff }}</pre></details>{% else %}<p>输入字段与最新保存内容一致；仍需核对来源版本与审计历史。</p>{% endfor %}
+        <label><input type="checkbox" name="acknowledge_latest" value="yes"> 我已对照最新原刊和已保存版本，明确保留当前输入作为新的修订。</label><div><button class="button button-secondary" type="submit" name="action" value="rebase" formnovalidate>以最新版本为基准继续核对（不保存）</button></div>
+      </section>{% endif %}
+      <div class="section-actions"><button class="button" type="submit" name="action" value="save">保存修改</button><a class="button button-secondary" href="{{ url_for('reader_review_activity', item_id=item.item_id, **review_queue_context) }}">重新载入已保存内容（放弃未保存输入）</a></div>
+      <p class="section-note">保存不等于发布。修订绑定来源版本 <code class="record-id">{{ base_version[:12] }}</code>；操作者和时间仅在私有审计记录中，不写入公开导出。</p>
+    </form>
+    {% endif %}
+    <aside class="reader-review-reference-column">{% include 'reader_review_evidence.html' %}</aside>
+  </div>
+  <section class="panel stack"><h2>私有修订历史与逐字段差异</h2><p class="section-note">新修订不会覆盖旧修订。以下操作者信息仅控制台可见，不进入公开数据。差异中 “−” 为此前内容，“+” 为此修订内容。</p>
+    {% for entry in revisions %}{% set revision = entry.record %}<details class="reader-review-reference"><summary>{{ revision.created_at }} · {{ revision.actor }} · <span class="status-badge status-neutral">{{ '人工核实' if revision.payload.status == 'verified' else '仍待核对' }}</span>{% if revision.revision == item.published_revision %} · 当前发布记录{% endif %}</summary><p>修订 <code class="record-id">{{ revision.revision }}</code></p><p>来源版本 <code class="record-id">{{ revision.base_version }}</code></p><p class="preserve-lines"><strong>公开说明：</strong>{{ revision.payload.reason }}</p>{% for change in entry.changes %}<details><summary>{{ change.label }}</summary><pre class="reader-review-diff">{{ change.diff }}</pre></details>{% else %}<p>与此前修订字段一致。</p>{% endfor %}</details>{% else %}<p>尚无人工修订。</p>{% endfor %}
+    {% for retirement in item.get('retirements', []) %}<details class="reader-review-reference" open><summary>{{ retirement.created_at }} · {{ retirement.actor }} · 私有停用确认{% if item.get('retirement') and retirement.revision == item.retirement.revision %}（当前历史修订）{% endif %}</summary><p>停用修订 <code class="record-id">{{ retirement.revision }}</code> · 核对来源版本 <code class="record-id">{{ retirement.base_version }}</code></p><p class="preserve-lines"><strong>私有原因（不公开）：</strong>{{ retirement.reason }}</p><p class="section-note">只确认停用所列修订，不删除历史，也不代表执行了公开发布。</p></details>{% endfor %}
+  </section>
+  {% include 'reader_review_publish_controls.html' %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const form = document.querySelector('#reader-review-form');
+  if (!form) return;
+  const rows = form.querySelector('[data-date-rows]');
+  const feedback = form.querySelector('[data-date-feedback]');
+  form.querySelector('[data-add-date]').addEventListener('click', () => {
+    if (rows.children.length >= 100) { feedback.textContent = '最多 100 行日期；请先移除不需要的日期。'; return; }
+    rows.append(document.querySelector('#review-date-template').content.cloneNode(true));
+    rows.lastElementChild.querySelector('select').focus();
+    feedback.textContent = '已添加日期行；请填写真实日期，或移除此行后保存。';
+  });
+  rows.addEventListener('click', (event) => {
+    if (!event.target.matches('[data-remove-date]')) return;
+    event.target.closest('.reader-review-date-row').remove();
+    feedback.textContent = '已移除本次表单中的日期；点击保存后才会生效。';
+  });
+})();
+</script>
+{% endblock %}

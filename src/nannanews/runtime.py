@@ -48,12 +48,20 @@ def _number(name, default, conversion=int):
     return value
 
 
-def _url(name, default=""):
+def _url(name, default="", *, allow_query=True):
     value = _env(name, default)
-    parsed = urlsplit(value)
-    if value and (parsed.scheme not in ("http", "https") or not parsed.netloc
-                  or parsed.username or parsed.password or parsed.fragment):
-        raise ConfigurationError(f"NANNA_{name} must be an HTTP(S) URL without credentials or fragment")
+    try:
+        parsed = urlsplit(value)
+        if value and (parsed.scheme not in ("http", "https") or not parsed.netloc
+                      or parsed.username or parsed.password or parsed.fragment
+                      or (not allow_query and parsed.query)):
+            raise ValueError
+        if value and not allow_query:
+            parsed.port
+            if not parsed.hostname or re.search(r'[\x00-\x20\x7f\\]', value):
+                raise ValueError
+    except ValueError:
+        raise ConfigurationError(f"NANNA_{name} must be an HTTP(S) URL without credentials, fragment or unsupported query") from None
     return value.rstrip("/")
 
 
@@ -125,6 +133,11 @@ class Settings:
     collection_time: str = '04:00'
     collection_page_limit: int = 10
     collection_fetch_workers: int = 1
+    reader_data_dir: Path | None = None
+    reader_site_data_dir: Path | None = None
+    reader_search_builder: Path | None = None
+    reader_url: str = ''
+    reader_evidence_dir: Path | None = None
 
 
 def load_settings():
@@ -146,12 +159,13 @@ def load_settings():
     collection_fetch_workers = _number('COLLECTION_FETCH_WORKERS', 1)
     if collection_fetch_workers > 6:
         raise ConfigurationError('NANNA_COLLECTION_FETCH_WORKERS must be between 1 and 6')
-    def optional_path(name):
+    def optional_path(name, *, resolve=True):
         value = _env(name)
         if not value:
             return None
         result = Path(value).expanduser()
-        return (result if result.is_absolute() else CODE_DIR / result).resolve()
+        result = result if result.is_absolute() else CODE_DIR / result
+        return result.resolve() if resolve else Path(os.path.abspath(result))
     return Settings(
         data_dir=data_dir, database_path=data_dir / "database.db", **directories,
         session_secret=_session_secret(data_dir),
@@ -170,6 +184,11 @@ def load_settings():
         collection_enabled=_bool('COLLECTION_ENABLED'), collection_time=collection_time,
         collection_page_limit=_number('COLLECTION_PAGE_LIMIT', 10),
         collection_fetch_workers=collection_fetch_workers,
+        reader_data_dir=optional_path('READER_DATA_DIR', resolve=False),
+        reader_site_data_dir=optional_path('READER_SITE_DATA_DIR', resolve=False),
+        reader_search_builder=optional_path('READER_SEARCH_BUILDER', resolve=False),
+        reader_url=_url('READER_URL', allow_query=False),
+        reader_evidence_dir=optional_path('READER_EVIDENCE_DIR', resolve=False),
     )
 
 

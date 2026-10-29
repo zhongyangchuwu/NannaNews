@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block title %}人工核查暂不可用 · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="page-stack"><section class="panel stack"><header class="page-header"><div><h1>人工核查暂不可用</h1></div></header><div class="notice notice-error" role="alert"><p>{{ error }}</p></div>
+<p>管理员须配置 <code>NANNA_READER_DATA_DIR</code> 指向已审核的公开 <code>data</code> 目录，并在独立私有控制台完成显式数据库迁移。发布还需配置 <code>NANNA_READER_SITE_DATA_DIR</code> 和 <code>NANNA_READER_SEARCH_BUILDER</code>；阅读页链接使用 <code>NANNA_READER_URL</code>。</p>
+<p>私有原始核查需配置 <code>NANNA_READER_EVIDENCE_DIR</code> 指向包含 <code>foundation.sqlite3</code> 的本地资料库。附件缺失时不会访问云端或伪造空白成功。</p><p>公开数据路径不得指向采集数据库、付费记录库或私有证据。本页不会创建数据、自动迁移、抓取来源或调用模型。</p><a class="button button-secondary" href="{{ url_for('reader_review_activities', q=review_queue_context.queue_q, status=review_queue_context.queue_status, page=review_queue_context.queue_page) }}">返回核查队列</a></section></div>
+{% endblock %}
