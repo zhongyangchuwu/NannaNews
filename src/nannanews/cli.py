@@ -617,15 +617,117 @@ def main(argv=None):
     sub = commands.add_parser('activity-candidates', help='Export public-only same-title or explicitly selected activity candidates to a private artifact')
     sub.add_argument('--output', required=True, help='New private output directory')
     sub.add_argument('--item-id', action='append', default=[], help='Select a cross-title candidate by public item ID; repeat at least twice')
+    foundation = commands.add_parser('data-foundation', help='Prepare and verify private activity data; never switch services or call models')
+    foundation_actions = foundation.add_subparsers(dest='foundation_action', required=True)
+    build = foundation_actions.add_parser('build', help='Import reviewed activity identities and offline original-source evidence')
+    build.add_argument('--root', required=True, type=Path)
+    build.add_argument('--public-data', required=True, type=Path)
+    build.add_argument('--originals-plan', type=Path)
+    build.add_argument('--canonical-data', type=Path, help='Read-only canonical runtime directory; not a migration target')
+    build.add_argument('--skip-original-parsing', action='store_true', help='Register originals without parsing new source entries')
+    extract = foundation_actions.add_parser('extract', help='Normalize selected historical evidence locally; original inputs are retained')
+    extract.add_argument('--root', required=True, type=Path)
+    extract.add_argument('inputs', nargs='*', type=Path)
+    extract.add_argument('--inputs-from', type=Path, help='JSON array of selected input paths, not an unrestricted directory walk')
+    capture = foundation_actions.add_parser('preserve-captures', help='Preserve exact existing SQLite source captures offline; originals always held')
+    capture.add_argument('--root', required=True, type=Path)
+    capture.add_argument('inputs', nargs='+', type=Path)
+    legacy = foundation_actions.add_parser('preserve-legacy-attempts', help='Preserve exact legacy request/result JSON by recorded request key; not HTTP wire')
+    legacy.add_argument('--root', required=True, type=Path)
+    legacy.add_argument('inputs', nargs='+', type=Path)
+    archive = foundation_actions.add_parser('archive', help='Manage the private foundation restic archive')
+    archive_actions = archive.add_subparsers(dest='archive_action', required=True)
+    archive_init = archive_actions.add_parser('init', help='Configure and initialize a foundation archive repository')
+    archive_init.add_argument('--root', required=True, type=Path)
+    archive_init.add_argument('--repository', required=True)
+    archive_init.add_argument('--password-file', required=True, type=Path)
+    archive_init.add_argument('--restic-binary', default='restic')
+    archive_relocate = archive_actions.add_parser('relocate', help='Verify and rebind an already copied native repository; never copy or initialize')
+    archive_relocate.add_argument('--root', required=True, type=Path)
+    archive_relocate.add_argument('--repository', required=True)
+    for name, description in (('backup', 'Back up the locally complete foundation with native restic'),
+                              ('verify', 'Check the configured native repository; full data reads are explicit')):
+        command = archive_actions.add_parser(name, help=description)
+        command.add_argument('--root', required=True, type=Path)
+        if name == 'verify':
+            command.add_argument('--full', action='store_true', help='Explicitly read all repository data')
+    archive_restore = archive_actions.add_parser('restore', help='Restore a verified foundation snapshot to a fresh target')
+    archive_restore.add_argument('--root', required=True, type=Path)
+    archive_restore.add_argument('--target', required=True, type=Path)
+    archive_restore.add_argument('--snapshot-id')
+    archive_get = archive_actions.add_parser('get', help='Read one archived blob by SHA-256')
+    archive_get.add_argument('--root', required=True, type=Path)
+    archive_get.add_argument('--sha256', required=True)
+    archive_get.add_argument('--output', required=True, type=Path)
+    export = foundation_actions.add_parser('export', help='Write a new minimal public projection, not the current website')
+    export.add_argument('--root', required=True, type=Path)
+    export.add_argument('--output', required=True, type=Path)
+    verify = foundation_actions.add_parser('verify', help='Check private foundation integrity and references')
+    verify.add_argument('--root', required=True, type=Path)
+    verify.add_argument('--full', action='store_true', help='Explicitly hash all local content and check all SQLite indexes')
+    compact = foundation_actions.add_parser('compact', help='Normalize and reclaim space in the prepared foundation only')
+    compact.add_argument('--root', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        independent = {"migrate", "init-admin", "doctor", "backup", "restore", "parse-pdf", "import-source-catalog"}
+        independent = {"migrate", "init-admin", "doctor", "backup", "restore", "parse-pdf", "import-source-catalog", "data-foundation"}
         if args.command not in independent:
             schema.require_schema()
         if args.command in {"collect", "collect-worker", "import-bulletins"}:
             runtime.prepare_runtime()
         if args.command == "migrate":
             print(f"Database schema is current (version {schema.migrate()})")
+        elif args.command == 'data-foundation':
+            from nannanews import data_foundation
+            root = args.root.expanduser().absolute()
+            action = args.foundation_action
+            if action == 'archive':
+                from nannanews import data_foundation_archive as archive_api
+                archive_action = args.archive_action
+                if archive_action == 'init':
+                    result = archive_api.configure_archive(root, repository=args.repository,
+                        password_file=args.password_file, restic_binary=args.restic_binary)
+                elif archive_action == 'relocate':
+                    result = archive_api.relocate_archive(root, repository=args.repository)
+                elif archive_action == 'backup':
+                    result = archive_api.archive_foundation(root)
+                elif archive_action == 'verify':
+                    result = archive_api.verify_archive(root, full=args.full)
+                elif archive_action == 'restore':
+                    result = archive_api.restore_foundation(root, target=args.target,
+                        snapshot_id=args.snapshot_id)
+                else:
+                    result = archive_api.read_archived_blob(root, args.sha256, target=args.output)
+            elif action == 'preserve-captures':
+                from nannanews.data_foundation_capture import preserve_capture_databases
+                result = preserve_capture_databases(root, args.inputs)
+            elif action == 'preserve-legacy-attempts':
+                from nannanews.data_foundation_capture import preserve_legacy_attempt_databases
+                result = preserve_legacy_attempt_databases(root, args.inputs)
+            elif action == 'build':
+                result = data_foundation.build_foundation(root, public_data=args.public_data,
+                    originals_plan=args.originals_plan, canonical_data=args.canonical_data,
+                    parse_originals=not args.skip_original_parsing)
+            elif action == 'export':
+                result = data_foundation.export_public(root, args.output)
+            elif action == 'verify':
+                result = data_foundation.verify_foundation(root, full=args.full)
+            elif action == 'compact':
+                result = data_foundation.compact_foundation(root)
+            else:
+                inputs = list(args.inputs)
+                if args.inputs_from:
+                    selected = json.loads(args.inputs_from.read_text(encoding='utf-8'))
+                    if not isinstance(selected, list) or any(not isinstance(path, str) or not path for path in selected):
+                        raise ValueError('Input manifest must be a JSON array of nonempty paths')
+                    inputs.extend(Path(path) for path in selected)
+                inputs = list(dict.fromkeys(path.expanduser().absolute() for path in inputs))
+                if not inputs:
+                    raise ValueError('Provide selected input paths or --inputs-from')
+                from nannanews.data_foundation_extract import extract_paths
+                result = extract_paths(root, inputs)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if result.get('ok') is False:
+                return 1
         elif args.command == "import-source-catalog":
             from nannanews.source_catalog import import_catalog
             count = import_catalog(args.input, args.output)
