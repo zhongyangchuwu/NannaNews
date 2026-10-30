@@ -1,0 +1,71 @@
+name: Reader Pages
+
+on:
+  push:
+    branches: [feat/source-first-collection]
+    paths:
+      - .github/workflows/pages.yml
+      - reader/**
+  pull_request:
+    branches: [feat/source-first-collection]
+    paths:
+      - .github/workflows/pages.yml
+      - reader/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reader-pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NANNA_COLLECTION_ENABLED: "false"
+      NANNA_MODEL_API_KEY: ""
+      NANNA_MODEL_BASE_URL: ""
+    defaults:
+      run:
+        working-directory: reader
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: reader/package-lock.json
+      - run: npm ci
+      - run: npm test
+      # A clean checkout stages only the reviewed facts in reader/public.
+      # No private database, complete resource pack, or model credentials enter CI.
+      - run: npm run build
+      - name: Upload static reader only
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: reader/dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Deploy reader
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
