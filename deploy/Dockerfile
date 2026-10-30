@@ -52,7 +52,8 @@ COPY reader/src/tokenize.mjs reader/src/review-validation.mjs ./reader/src/
 COPY --from=reader-runtime /reader/node_modules ./reader/node_modules
 COPY --from=reader-build /reader/dist /opt/nanna-reader-site
 COPY deploy/stage-reader.sh ./deploy/stage-reader.sh
-RUN pip install --no-cache-dir pip==25.1.1 \
+RUN --mount=type=secret,id=pip_index_url,env=PIP_INDEX_URL \
+    pip install --no-cache-dir pip==25.1.1 \
     && pip install --no-cache-dir .
 RUN groupadd --gid 10001 nanna \
     && useradd --uid 10001 --gid nanna --create-home nanna \
