@@ -483,6 +483,8 @@ GitLab CI 安装 `.[test]`，运行 Python 测试、读者端测试与类型检�
 
 在 `git.nju.edu.cn` 的校内 Runner 上，可通过项目级 CI/CD 变量 `PIP_INDEX_URL=https://mirror.nju.edu.cn/pypi/web/simple` 使用学校 PyPI 镜像，避免直连 `files.pythonhosted.org` 下载超时；不将校内镜像写死为其他部署环境的默认源。切换前先确认镜像提供锁定版本及 Runner 平台对应的安装包，保留 HTTPS 校验和现有版本约束，再重跑失败作业。`pip install` 阶段失败表示依赖尚未安装完成，不能据此判断后续测试结果。
 
+镜像构建通过 BuildKit secret `pip_index_url` 将同一 `PIP_INDEX_URL` 仅传入依赖安装步骤；项目级变量不会自动进入 Dockerfile。CI 未设置项目变量时默认使用 `https://pypi.org/simple`。该值不作为构建参数或持久化 `ENV` 写入镜像，普通本地构建不提供 secret 时仍使用 pip 的默认源。
+
 镜像作业使用带 `dind` 标签的隔离 Runner、Docker 29 CLI／DinD 服务和 Buildx 的 `docker-container` 驱动，导出 `nannanews.oci.tar`。校内对应 `linux-docker-sysbox` Runner；普通 Docker Runner 不满足原 RootlessKit 的用户命名空间要求。BuildKit 显式加载 `deploy/buildkitd.nju.toml`，通过 `docker.nju.edu.cn` 和 `ghcr.nju.edu.cn` 拉取基础镜像，保留 TLS 证书校验；独立的 BuildKit 不会自动继承 Docker daemon 的镜像配置。其他 GitLab 实例需提供同标签、支持 DinD 的隔离 Runner，并按实际网络调整镜像入口。
 
 Git tag 是镜像版本。注册表已启用时，`release-image` 会要求 CI 作业凭据并推送 `CI_REGISTRY_IMAGE:CI_COMMIT_TAG`，不会创建 `latest` 别名；注册表停用时跳过推送，CI 只生成短期 OCI 构建产物。注册表配置由项目管理员负责。
