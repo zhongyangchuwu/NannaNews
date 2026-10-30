@@ -49,7 +49,7 @@ reader-checks:
     - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
     - export NANNA_COLLECTION_ENABLED=false
     - docker info
-    - docker buildx create --driver docker-container --driver-opt image=moby/buildkit:v0.22.0 --use
+    - docker buildx create --driver docker-container --driver-opt image=moby/buildkit:v0.22.0 --buildkitd-config deploy/buildkitd.nju.toml --use
 
 container-artifact:
   extends: .image-build
