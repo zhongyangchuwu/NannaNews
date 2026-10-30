@@ -32,18 +32,29 @@ reader-checks:
     - npm run check
 
 # Build without starting the application or running acquisition/model code.
-# The runner must support the user namespaces required by rootless BuildKit.
-container-artifact:
+# NJU's dind runner provides isolated Docker; ordinary runners deny RootlessKit.
+.image-build:
   stage: image
-  image:
-    name: moby/buildkit:v0.22.0-rootless
-    entrypoint: [""]
+  tags: [dind]
+  image: docker:29-cli
+  services:
+    - name: docker:29-dind
+      alias: docker
+      variables:
+        HEALTHCHECK_TCP_PORT: "2375"
   variables:
-    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
-  script:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
     - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
     - export NANNA_COLLECTION_ENABLED=false
-    - buildctl-daemonless.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=deploy/Dockerfile --output type=oci,dest=nannanews.oci.tar
+    - docker info
+    - docker buildx create --driver docker-container --driver-opt image=moby/buildkit:v0.22.0 --use
+
+container-artifact:
+  extends: .image-build
+  script:
+    - docker buildx build --file deploy/Dockerfile --output type=oci,dest=nannanews.oci.tar .
   artifacts:
     paths:
       - nannanews.oci.tar
@@ -51,22 +62,14 @@ container-artifact:
 
 # A Git tag is the version; push only when this project's registry credentials exist.
 release-image:
-  stage: image
-  image:
-    name: moby/buildkit:v0.22.0-rootless
-    entrypoint: [""]
-  variables:
-    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  extends: .image-build
   rules:
     - if: '$CI_COMMIT_TAG && $CI_COMMIT_TAG != "latest" && $CI_REGISTRY && $CI_REGISTRY_IMAGE'
   script:
-    - unset NANNA_MODEL_API_KEY NANNA_MODEL_BASE_URL
-    - export NANNA_COLLECTION_ENABLED=false
     - set +x
     - test -n "$CI_REGISTRY_USER" && test -n "$CI_REGISTRY_PASSWORD"
-    - mkdir -p "$HOME/.docker"
-    - printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$CI_REGISTRY" "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" > "$HOME/.docker/config.json"
-    - buildctl-daemonless.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=deploy/Dockerfile --output "type=image,name=${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG},push=true"
+    - printf '%s' "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" --username "$CI_REGISTRY_USER" --password-stdin
+    - docker buildx build --file deploy/Dockerfile --tag "${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}" --push .
 
 # Opt-in static publication only. Default to reviewed facts in Git; an optional
 # approved resource pack is staged by whitelist. Never read the private database.
