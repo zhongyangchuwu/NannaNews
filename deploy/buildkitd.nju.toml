@@ -1,0 +1,6 @@
+# Use the mirrors' own hostnames so TLS hostname verification stays enabled.
+[registry."docker.io"]
+  mirrors = ["docker.nju.edu.cn"]
+
+[registry."ghcr.io"]
+  mirrors = ["ghcr.nju.edu.cn"]

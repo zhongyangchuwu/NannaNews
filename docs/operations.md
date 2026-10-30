@@ -481,6 +481,10 @@ NANNA_EXTERNAL_WRITERS_STOPPED=YES \
 
 GitLab CI 安装 `.[test]`，运行 Python 测试、读者端测试与类型检查，并构建镜像，但不启动应用。CI 禁用采集、不提供模型 key、不访问生产数据库，也不控制服务。依赖和镜像构建可能通过网络下载软件包；这不等于运行来源采集或付费模型调用。
 
+在 `git.nju.edu.cn` 的校内 Runner 上，可通过项目级 CI/CD 变量 `PIP_INDEX_URL=https://mirror.nju.edu.cn/pypi/web/simple` 使用学校 PyPI 镜像，避免直连 `files.pythonhosted.org` 下载超时；不将校内镜像写死为其他部署环境的默认源。切换前先确认镜像提供锁定版本及 Runner 平台对应的安装包，保留 HTTPS 校验和现有版本约束，再重跑失败作业。`pip install` 阶段失败表示依赖尚未安装完成，不能据此判断后续测试结果。
+
+镜像作业使用带 `dind` 标签的隔离 Runner、Docker 29 CLI／DinD 服务和 Buildx 的 `docker-container` 驱动，导出 `nannanews.oci.tar`。校内对应 `linux-docker-sysbox` Runner；普通 Docker Runner 不满足原 RootlessKit 的用户命名空间要求。BuildKit 显式加载 `deploy/buildkitd.nju.toml`，通过 `docker.nju.edu.cn` 和 `ghcr.nju.edu.cn` 拉取基础镜像，保留 TLS 证书校验；独立的 BuildKit 不会自动继承 Docker daemon 的镜像配置。其他 GitLab 实例需提供同标签、支持 DinD 的隔离 Runner，并按实际网络调整镜像入口。
+
 Git tag 是镜像版本。注册表已启用时，`release-image` 会要求 CI 作业凭据并推送 `CI_REGISTRY_IMAGE:CI_COMMIT_TAG`，不会创建 `latest` 别名；注册表停用时跳过推送，CI 只生成短期 OCI 构建产物。注册表配置由项目管理员负责。
 
 Pages 默认不发布；只有默认分支的 `PUBLISH_STATIC_READER=true` 才构建并上传静态站点。默认使用 Git 中审核过的 `activity-facts.json`，不访问私有云盘。可选 `STATIC_READER_DATA_SOURCE` 用于已公开并审核过的完整白名单资源包：URL 不带凭据或查询参数，不能跨站重定向，输入不能指向私有数据库、归档、备份或运行目录。暂存只复制当前清单引用的资源并校验路径与哈希，不带入额外文件和未引用版本。Pages 不运行 Python 后端；公开权限、Runner、注册表和真实主机权限仍由运营者提供，CI 成功不代表真实发布或社交平台预览已验收。
