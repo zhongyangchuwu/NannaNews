@@ -2,12 +2,12 @@ name: Reader Pages
 
 on:
   push:
-    branches: [feat/source-first-collection]
+    branches: [main]
     paths:
       - .github/workflows/pages.yml
       - reader/**
   pull_request:
-    branches: [feat/source-first-collection]
+    branches: [main]
     paths:
       - .github/workflows/pages.yml
       - reader/**
