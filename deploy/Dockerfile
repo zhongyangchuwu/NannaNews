@@ -48,7 +48,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src/nannanews ./src/nannanews
 COPY reader/package.json reader/package-lock.json ./reader/
 COPY reader/scripts ./reader/scripts
-COPY reader/src/tokenize.mjs reader/src/review-validation.mjs ./reader/src/
+COPY reader/src/tokenize.mjs reader/src/review-validation.mjs reader/src/public-format.mjs ./reader/src/
 COPY --from=reader-runtime /reader/node_modules ./reader/node_modules
 COPY --from=reader-build /reader/dist /opt/nanna-reader-site
 COPY deploy/stage-reader.sh ./deploy/stage-reader.sh

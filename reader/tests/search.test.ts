@@ -61,7 +61,7 @@ const fullTexts: Record<string, string> = {
   [standaloneOccurrence]: '独立收录活动 StandaloneSearchTerm 已审阅摘要',
 };
 
-async function dataset(): Promise<{ root: string; manifest: Manifest }> {
+async function dataset(): Promise<{ root: string; manifest: Extract<Manifest, { schema_version: 2 }> }> {
   const root = await mkdtemp(join(tmpdir(), 'webnews-reader-search-'));
   temporaryRoots.push(root);
   await mkdir(join(root, `versions/${version}`), { recursive: true });

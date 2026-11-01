@@ -190,14 +190,9 @@ def test_public_contract_privacy_readonly_and_all_occurrences(evidence, tmp_path
     assert sum(len(detail['occurrences']) for detail in details.values()) == 5
     assert all(len(detail['occurrences']) == item['occurrence_count']
                for item in catalog['items'] for detail in [details[item['id']]])
-    assert json.loads((output / manifest['files']['item_index']).read_bytes()) == catalog['items']
-    for issue in issues:
-        projection = json.loads((output / manifest['files']['issue_catalogs'][issue['id']]).read_bytes())
-        expected = [row for row in catalog['occurrences'] if row['issue_id'] == issue['id']]
-        assert projection['occurrences'] == expected
-        assert len(projection['occurrences']) == issue['occurrence_count']
-        assert {item['id'] for item in projection['items']} == {row['item_id'] for row in expected}
-        assert all('body_text' not in row and 'date_review' not in row for row in projection['occurrences'])
+    assert set(manifest['files']) == {'catalog', 'issues', 'search_documents', 'search_index'}
+    assert not (output / 'versions' / manifest['data_version'] / 'issue-catalogs').exists()
+    assert not (output / 'versions' / manifest['data_version'] / 'item-index.json').exists()
     for content in _tree(output).values():
         assert PRIVATE.encode() not in content
         assert str(evidence.data_dir).encode() not in content
@@ -387,19 +382,42 @@ def test_replacement_is_guarded_preserves_unrelated_files_and_built_index(eviden
     assert not (output / _load(output)[0]['files']['search_index']).exists()
 
 
-def test_legacy_same_version_replacement_adds_projections(evidence, tmp_path):
+def test_native_export_cannot_replace_v3_site(evidence, tmp_path):
+    output = tmp_path / 'site-data'
+    version = 'a' * 64
+    prefix = 'versions/' + version + '/'
+    issue = 'issue-' + 'b' * 24
+    files = {'issues': prefix + 'issues.json', 'item_index': prefix + 'item-index.json',
+             'search_index': prefix + 'search-index.json',
+             'partitions': {issue: prefix + 'facts/' + issue + '.json'}}
+    payloads = {files['issues']: [{'id': issue, 'documents': [], 'occurrence_count': 0}],
+                files['item_index']: [], files['search_index']: {'serializationVersion': 2, 'documentCount': 0, 'index': []},
+                files['partitions'][issue]: {'messages': [], 'owners': {}, 'occurrences': []}}
+    for relative, payload in payloads.items():
+        target = output / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_json(payload))
+    manifest = {'schema_version': 3, 'generator': 'nannanews-reader-v3', 'data_version': version,
+                'counts': {'items': 0, 'occurrences': 0, 'issues': 1, 'documents': 0, 'images': 0, 'pdfs': 0},
+                'files': files}
+    (output / 'manifest.json').write_text(_json(manifest))
+    before = _tree(output)
+    with pytest.raises(static_export.StaticExportError, match='v3'):
+        static_export.export_static(output, settings=evidence, replace=True)
+    assert _tree(output) == before
+
+
+def test_legacy_projection_manifest_remains_a_valid_replacement_target(evidence, tmp_path):
     output = tmp_path / 'public'
     first = static_export.export_static(output, settings=evidence)
-    manifest, _, _, _, _ = _load(output)
-    paths = [manifest['files'].pop('item_index'), *manifest['files'].pop('issue_catalogs').values()]
-    for relative in paths:
-        (output / relative).unlink()
+    manifest, _, issues, _, _ = _load(output)
+    prefix = 'versions/' + first['data_version'] + '/'
+    manifest['files'].update(item_index=prefix + 'item-index.json', issue_catalogs={
+        issue['id']: prefix + 'issue-catalogs/' + issue['id'] + '.json' for issue in issues})
     (output / 'manifest.json').write_text(_json(manifest))
     second = static_export.export_static(output, settings=evidence, replace=True)
     assert second['data_version'] == first['data_version']
-    updated = _load(output)[0]
-    assert all((output / relative).is_file() for relative in
-               [updated['files']['item_index'], *updated['files']['issue_catalogs'].values()])
+    assert set(_load(output)[0]['files']) == {'catalog', 'issues', 'search_documents', 'search_index'}
 
 
 @pytest.mark.parametrize('damage', ['missing-pair', 'extra', 'traversal', 'wrong-version', 'invalid-map'])
@@ -408,6 +426,8 @@ def test_replacement_rejects_invalid_projection_manifest(evidence, tmp_path, dam
     static_export.export_static(output, settings=evidence)
     manifest = _load(output)[0]
     files = manifest['files']
+    prefix = 'versions/' + manifest['data_version'] + '/'
+    files.update(item_index=prefix + 'item-index.json', issue_catalogs={})
     if damage == 'missing-pair':
         del files['item_index']
     elif damage == 'extra':
@@ -421,6 +441,28 @@ def test_replacement_rejects_invalid_projection_manifest(evidence, tmp_path, dam
     (output / 'manifest.json').write_text(_json(manifest))
     with pytest.raises(static_export.StaticExportError):
         static_export.export_static(output, settings=evidence, replace=True)
+
+
+@pytest.mark.parametrize('damage', ['traversal', 'wrong-version', 'duplicate', 'extra', 'invalid-partition'])
+def test_v3_manifest_rejects_unsafe_paths(damage):
+    version = '1' * 64
+    prefix = 'versions/' + version + '/'
+    issue = 'issue-' + 'a' * 24
+    files = {'issues': prefix + 'issues.json', 'item_index': prefix + 'item-index.json',
+             'search_index': prefix + 'search-index.json',
+             'partitions': {issue: prefix + 'facts/' + issue + '.json'}}
+    if damage == 'traversal':
+        files['partitions'][issue] = prefix + '../private.json'
+    elif damage == 'wrong-version':
+        files['issues'] = 'versions/' + '0' * 64 + '/issues.json'
+    elif damage == 'duplicate':
+        files['item_index'] = files['issues']
+    elif damage == 'extra':
+        files['catalog'] = prefix + 'catalog.json'
+    else:
+        files['partitions'] = {'../private': prefix + 'facts/private.json'}
+    with pytest.raises(ValueError):
+        static_export._manifest_paths(files, version, 3)
 
 
 def test_manifest_commit_failure_leaves_old_dataset_intact(evidence, tmp_path, monkeypatch):

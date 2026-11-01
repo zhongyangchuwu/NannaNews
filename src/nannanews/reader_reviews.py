@@ -399,7 +399,10 @@ class ReviewStore:
 
     def _active(self):
         try:
-            return _existing_manifest(self._root(), True)
+            manifest = _existing_manifest(self._root(), True)
+            if not manifest or manifest['schema_version'] != 2:
+                raise StaticExportError('Review source must be native v2.')
+            return manifest
         except StaticExportError:
             raise ReviewUnavailable('公开数据 manifest 无效；请配置原生静态导出的 data 目录。') from None
 

@@ -3,26 +3,23 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stagePublicFacts } from './stage-public-facts.mjs';
-import { catalogProjections } from './catalog-projections.mjs';
 
 const target = fileURLToPath(new URL('../public/data/', import.meta.url));
 const args = process.argv.slice(2);
 const ifMissing = args[0] === '--if-missing';
 const sources = args.slice(ifMissing ? 1 : 0);
 if (sources.length > 1) throw new Error('用法：npm run stage:data -- [--if-missing] [公开导出目录或 manifest.json 的公开 HTTP(S) URL]');
-let input = sources[0] || process.env.STATIC_READER_DATA_SOURCE;
+const input = sources[0] || process.env.STATIC_READER_DATA_SOURCE;
 if (input && !ifMissing && process.argv.length > 3 || input && ifMissing && process.argv.length > 4) {
   throw new Error('用法：npm run stage:data -- [--if-missing] [公开导出目录或 manifest.json 的公开 HTTP(S) URL]');
 }
-let upgrade = false;
 try {
   const existing = await lstat(target);
   if (ifMissing && existing.isDirectory() && !existing.isSymbolicLink()) {
-    upgrade = true;
-    input = target;
-  } else {
-    throw new Error('目标 reader/public/data 已存在；为避免误删，不会自动替换。请使用空工作树构建或先移走已生成目录。');
+    console.log(JSON.stringify({ output: 'public/data', staged: false, reason: 'already-exists' }));
+    process.exit(0);
   }
+  throw new Error('目标 reader/public/data 已存在；为避免误删，不会自动替换。请使用空工作树构建或先移走已生成目录。');
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 if (!input) {
   const result = await stagePublicFacts(target);
@@ -86,11 +83,10 @@ async function stageJson(relative) {
   return value;
 }
 
-async function stage(relative, buffer, generated = false) {
+async function stage(relative, buffer) {
   if (paths.has(relative)) return;
   if (paths.size >= 10000) throw new Error('公开数据资源数超过构建上限。');
   paths.add(relative);
-  if (upgrade && !generated) return;
   const filename = path.join(staging, relative);
   await mkdir(path.dirname(filename), { recursive: true });
   await writeFile(filename, buffer, { flag: 'wx' });
@@ -103,44 +99,9 @@ async function eachLimited(values, action) {
     while (index < values.length) await action(values[index++]);
   }));
 }
-async function existingProjectionsComplete(manifest, version) {
-  const catalogs = manifest.files.issue_catalogs;
-  if (!catalogs || typeof catalogs !== 'object' || Array.isArray(catalogs)
-    || typeof manifest.files.item_index !== 'string') return false;
-  const issues = JSON.parse((await obtain(manifest.files.issues)).toString('utf8'));
-  if (!Array.isArray(issues) || issues.length !== manifest.counts.issues) return false;
-  const ids = new Set();
-  for (const issue of issues) {
-    if (!issue || typeof issue.id !== 'string' || ids.has(issue.id) || !Object.hasOwn(catalogs, issue.id)) return false;
-    ids.add(issue.id);
-  }
-  if (Object.keys(catalogs).length !== ids.size) return false;
-  const reserved = new Set(['catalog', 'issues', 'search_documents', 'search_index'].map((key) => manifest.files[key]));
-  const seen = new Set();
-  for (const relative of [manifest.files.item_index, ...Object.values(catalogs)]) {
-    try { safePath(relative, version); } catch { return false; }
-    if (!relative.endsWith('.json') || seen.has(relative) || reserved.has(relative)) return false;
-    seen.add(relative);
-    let filename = source;
-    const components = relative.split('/');
-    for (const [index, component] of components.entries()) {
-      filename = path.join(filename, component);
-      let info;
-      try { info = await lstat(filename); } catch (error) {
-        if (error.code === 'ENOENT') return false;
-        throw error;
-      }
-      if (info.isSymbolicLink()) throw new Error('公开数据不能包含符号链接。');
-      if (index === components.length - 1 ? !info.isFile() || info.size === 0 : !info.isDirectory()) return false;
-    }
-  }
-  return true;
-}
 
 
 try {
-  // Read the existing manifest before creating a staging tree so an already
-  // compatible reader does not repeatedly copy or hash its public assets.
   const manifest = JSON.parse((await obtain('manifest.json')).toString('utf8'));
   if (manifest.schema_version !== 2 || manifest.generator !== 'webnews-static-v2'
     || !/^[a-f0-9]{64}$/.test(manifest.data_version) || !manifest.files || !manifest.counts) throw new Error('不是兼容的公开刊物数据导出。');
@@ -149,10 +110,6 @@ try {
   }
   const version = manifest.data_version;
   for (const name of ['catalog', 'issues', 'search_documents', 'search_index']) safePath(manifest.files[name], version);
-  if (upgrade && Object.hasOwn(manifest.files, 'item_index') && await existingProjectionsComplete(manifest, version)) {
-    console.log(JSON.stringify({ output: 'public/data', staged: false, reason: 'already-exists' }));
-    process.exit(0);
-  }
   await mkdir(staging, { recursive: true });
   const [catalog, issues, searchDocuments] = await Promise.all([
     stageJson(manifest.files.catalog), stageJson(manifest.files.issues), stageJson(manifest.files.search_documents),
@@ -160,10 +117,34 @@ try {
   if (!Array.isArray(catalog.items) || !Array.isArray(catalog.occurrences) || !Array.isArray(issues) || !Array.isArray(searchDocuments)
     || catalog.items.length !== manifest.counts.items || catalog.occurrences.length !== manifest.counts.occurrences
     || issues.length !== manifest.counts.issues || searchDocuments.length !== manifest.counts.occurrences) throw new Error('公开数据数量与清单不一致。');
-  const projections = catalogProjections(catalog, issues, version);
-  if (projections.documentCount !== manifest.counts.documents) throw new Error('公开数据文档数量与清单不一致。');
+  const itemRows = new Map(catalog.items.map((item) => [item.id, { item, count: 0, latest: false }]));
+  const issueRows = new Map(issues.map((issue) => [issue.id, { issue, count: 0 }]));
+  const documents = new Map();
+  for (const issue of issues) for (const document of issue.documents) {
+    if (documents.has(document.id)) throw new Error('公开数据包含重复文档。');
+    documents.set(document.id, issue.id);
+  }
+  if (itemRows.size !== catalog.items.length || issueRows.size !== issues.length
+    || documents.size !== manifest.counts.documents) throw new Error('公开数据标识或文档数量不一致。');
+  const occurrenceIds = new Set();
+  for (const row of catalog.occurrences) {
+    const item = itemRows.get(row.item_id);
+    if (!item || occurrenceIds.has(row.id)) throw new Error('公开数据包含无效或重复消息记录。');
+    occurrenceIds.add(row.id);
+    item.count++;
+    item.latest ||= row.id === item.item.latest_occurrence_id;
+    if (row.kind === 'standalone') {
+      if (row.issue_id !== null || row.document_id !== null) throw new Error('独立收录不能伪造期次引用。');
+    } else {
+      const issue = issueRows.get(row.issue_id);
+      if (!issue || documents.get(row.document_id) !== row.issue_id) throw new Error('公开数据期次引用无效。');
+      issue.count++;
+    }
+  }
+  if ([...itemRows.values()].some(({ item, count, latest }) => count !== item.occurrence_count || !latest)
+    || [...issueRows.values()].some(({ issue, count }) => count !== issue.occurrence_count)) throw new Error('公开数据消息或期次数量不一致。');
   const searchIds = new Set(searchDocuments.map((document) => document?.id));
-  if (searchIds.size !== projections.occurrenceIds.size || [...projections.occurrenceIds].some((id) => !searchIds.has(id))) {
+  if (searchIds.size !== occurrenceIds.size || [...occurrenceIds].some((id) => !searchIds.has(id))) {
     throw new Error('搜索文档与消息目录不一致。');
   }
   const catalogItems = new Map(catalog.items.map((item) => [item.id, item]));
@@ -204,36 +185,11 @@ try {
     if (createHash('sha256').update(buffer).digest('hex') !== match[1]) throw new Error('公开资源内容哈希不匹配。');
     await stage(relative, buffer);
   });
-  for (const [relative, value] of Object.entries(projections.files)) {
-    if (paths.has(relative) || relative === manifest.files.search_index) throw new Error('生成的目录路径与公开资源冲突。');
-    await stage(relative, Buffer.from(`${JSON.stringify(value)}\n`), true);
-  }
-  manifest.files.issue_catalogs = projections.issueCatalogs;
-  manifest.files.item_index = projections.itemIndex;
-  await stage('manifest.json', Buffer.from(`${JSON.stringify(manifest)}\n`), true);
-  if (upgrade) {
-    // Publish projections first and atomically replace the manifest last. The old
-    // manifest remains usable if validation or copying fails before that point.
-    for (const relative of [...Object.keys(projections.files), 'manifest.json']) {
-      const parts = relative.split('/');
-      let directory = target;
-      for (const part of parts.slice(0, -1)) {
-        directory = path.join(directory, part);
-        try { await mkdir(directory); } catch (error) { if (error.code !== 'EEXIST') throw error; }
-        const info = await lstat(directory);
-        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('公开数据不能包含符号链接。');
-      }
-      const destination = path.join(target, relative);
-      try {
-        const info = await lstat(destination);
-        if (!info.isFile() || info.isSymbolicLink()) throw new Error('公开数据不能包含符号链接。');
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(path.join(staging, relative), destination);
-    }
-    await rm(staging, { recursive: true, force: true });
-    console.log(JSON.stringify({ output: 'public/data', staged: false, reason: 'already-exists' }));
-    process.exit(0);
-  }
+  // This directory is the operator/build input, not the deployed browser data.
+  // Old additive projections are regenerated as normalized v3 data by build-public.
+  manifest.files = Object.fromEntries(['catalog', 'issues', 'search_documents', 'search_index']
+    .map((key) => [key, manifest.files[key]]));
+  await stage('manifest.json', Buffer.from(`${JSON.stringify(manifest)}\n`));
   await rename(staging, target);
   console.log(JSON.stringify({ data_version: version, files: paths.size, bytes, counts: manifest.counts, output: 'public/data' }));
 } catch (error) {

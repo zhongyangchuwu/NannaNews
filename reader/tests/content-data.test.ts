@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { StaticDataset } from '../src/data';
 import type { ActivityReview, Catalog, Manifest, ManualActivity, PublicDate, PublicIssue, PublicOccurrence, SourceReview } from '../src/types';
 import { currentActivityDate } from '../src/filter';
+import { encodePartitionedFacts } from '../src/public-format.mjs';
 
 const DATA_VERSION = 'a'.repeat(64);
 const ITEM_ID = `item-${'1'.repeat(24)}`;
@@ -431,7 +432,7 @@ describe('public human review boundaries', () => {
 describe('lazy static datasets', () => {
   function partitioned() {
     const payloads = datasetPayload(occurrenceFixture());
-    const manifest = payloads.get('/data/manifest.json') as Manifest;
+    const manifest = payloads.get('/data/manifest.json') as Extract<Manifest, { schema_version: 2 }>;
     const catalog = payloads.get(`/data/${manifest.files.catalog}`) as Catalog;
     const prefix = `versions/${DATA_VERSION}`;
     const alias = `item-${'4'.repeat(24)}`;
@@ -512,5 +513,185 @@ describe('lazy static datasets', () => {
     await expect(dataset.loadIssue(ISSUE_ID, controller.signal)).rejects.toThrow();
     expect((await dataset.loadIssue(ISSUE_ID)).occurrences).toHaveLength(1);
     expect(requests.filter((path) => path === `/data/${manifest.files.catalog}`)).toHaveLength(2);
+  });
+});
+
+describe('normalized public datasets', () => {
+  function fixture(detailRow = occurrenceFixture(), noExtras = false) {
+    const payloads = datasetPayload(detailRow);
+    const sourceManifest = payloads.get('/data/manifest.json') as Extract<Manifest, { schema_version: 2 }>;
+    const catalog = JSON.parse(JSON.stringify(payloads.get(`/data/${sourceManifest.files.catalog}`))) as Catalog;
+    const issues = structuredClone(payloads.get(`/data/${sourceManifest.files.issues}`)) as PublicIssue[];
+    const oldIssue = `issue-${'7'.repeat(24)}`;
+    const oldDoc = 'c'.repeat(64);
+    const oldOccurrence = `occ-${'8'.repeat(24)}`;
+    const alias = `item-${'4'.repeat(24)}`;
+    issues.push({ ...issues[0], id: oldIssue, documents: [{ ...issues[0].documents[0], id: oldDoc }] });
+    catalog.items[0].aliases = [alias];
+    catalog.items[0].occurrence_count = 2;
+    const oldRow = { ...catalog.occurrences[0], id: oldOccurrence, issue_id: oldIssue, document_id: oldDoc, title: '旧标题' };
+    catalog.occurrences.unshift(oldRow);
+    const detail = { id: ITEM_ID, latest_occurrence_id: OCCURRENCE_ID, occurrences: [detailRow,
+      { ...detailRow, id: oldOccurrence, issue_id: oldIssue, document_id: oldDoc, title: '旧标题', body_text: noExtras ? '' : '旧正文' }] };
+    sourceManifest.counts.occurrences = 2;
+    sourceManifest.counts.issues = 2;
+    sourceManifest.counts.documents = 2;
+    const encoded = encodePartitionedFacts(catalog, issues, { [ITEM_ID]: detail }, sourceManifest);
+    const prefix = `versions/${DATA_VERSION}`;
+    const manifest: Extract<Manifest, { schema_version: 3 }> = {
+      schema_version: 3, generator: 'nannanews-reader-v3', data_version: DATA_VERSION,
+      counts: sourceManifest.counts,
+      files: { issues: `${prefix}/issues.json`, item_index: `${prefix}/item-index.json`, search_index: `${prefix}/search-index.json`,
+        partitions: Object.fromEntries(Object.keys(encoded.partitions).map((key) => [key, `${prefix}/facts/${key}.json`])) },
+    };
+    const data = new Map<string, unknown>([['/data/manifest.json', manifest], [`/data/${manifest.files.issues}`, issues],
+      [`/data/${manifest.files.item_index}`, encoded.itemIndex]]);
+    for (const [key, part] of Object.entries(encoded.partitions)) data.set(`/data/${manifest.files.partitions[key]}`, part);
+    for (const [bucket, shard] of Object.entries(encoded.detailShards)) data.set(`/data/${prefix}/details/${bucket}.json`, shard);
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      const value = data.get(path);
+      return new Response(JSON.stringify(value ?? null), { status: value === undefined ? 404 : 200 });
+    });
+    return { data, manifest, encoded, requests, oldIssue, oldOccurrence, alias };
+  }
+
+  it('loads metadata and only needed owner partitions, preserving global order', async () => {
+    const { requests, manifest, oldIssue, oldOccurrence } = fixture();
+    const dataset = await loadDataset();
+    expect(requests).toEqual(['/data/manifest.json', `/data/${manifest.files.issues}`]);
+    expect((await dataset.loadIssue(ISSUE_ID)).occurrences.map((row) => row.id)).toEqual([OCCURRENCE_ID]);
+    expect(requests).not.toContain(`/data/${manifest.files.partitions[oldIssue]}`);
+    expect(requests).not.toContain(`/data/${manifest.files.item_index}`);
+    expect((await dataset.loadIssue(oldIssue)).occurrences.map((row) => row.id)).toEqual([oldOccurrence]);
+    expect((await dataset.loadCatalog()).occurrences.map((row) => row.id)).toEqual([oldOccurrence, OCCURRENCE_ID]);
+    expect(requests.some((path) => /catalog\.json|search-documents\.json/.test(path))).toBe(false);
+  });
+
+  it('loads a historical partition and its owner without leaking foreign rows', async () => {
+    const { requests, manifest, oldIssue, oldOccurrence } = fixture();
+    const dataset = await loadDataset();
+    const issue = await dataset.loadIssue(oldIssue);
+    expect(issue.occurrences.map((row) => row.id)).toEqual([oldOccurrence]);
+    expect(requests).toContain(`/data/${manifest.files.partitions[oldIssue]}`);
+    expect(requests).toContain(`/data/${manifest.files.partitions[ISSUE_ID]}`);
+    expect(requests).not.toContain(`/data/${manifest.files.item_index}`);
+  });
+
+  it('rejects duplicate global ordinals', async () => {
+    const { encoded, oldIssue } = fixture();
+    encoded.partitions[oldIssue].occurrences[0].order = encoded.partitions[ISSUE_ID].occurrences[0].order;
+    const dataset = await loadDataset();
+    await expect(dataset.loadCatalog()).rejects.toThrow();
+  });
+
+  it('fetches every partition at most once during a global load beyond cache capacity', async () => {
+    const { data, manifest, encoded, requests, oldIssue } = fixture();
+    const issues = data.get(`/data/${manifest.files.issues}`) as PublicIssue[];
+    const paths: Record<string, string> = { [ISSUE_ID]: manifest.files.partitions[ISSUE_ID] };
+    for (let i = 0; i < 12; i++) {
+      const id = `issue-${(100 + i).toString(16).padStart(24, '0')}`;
+      const path = `versions/${DATA_VERSION}/facts/${id}.json`;
+      issues.push({ ...issues[0], id, occurrence_count: 0, documents: [] });
+      paths[id] = path;
+      data.set(`/data/${path}`, { messages: [], owners: {}, occurrences: [] });
+    }
+    paths[oldIssue] = manifest.files.partitions[oldIssue];
+    manifest.files.partitions = paths;
+    manifest.counts.issues = issues.length;
+    const dataset = await loadDataset();
+    expect((await dataset.loadCatalog()).occurrences).toHaveLength(2);
+    for (const path of Object.values(paths)) expect(requests.filter((request) => request === `/data/${path}`)).toHaveLength(1);
+    expect(encoded.partitions[oldIssue].owners[ITEM_ID]).toBe(ISSUE_ID);
+  });
+
+  it('does not fetch unrelated owners when loading a direct item', async () => {
+    const { data, manifest, encoded, requests, alias } = fixture();
+    const foreignIssue = `issue-${'9'.repeat(24)}`;
+    const foreignItem = `item-${'a'.repeat(24)}`;
+    const foreignOld = `occ-${'b'.repeat(24)}`;
+    const foreignLatest = `occ-${'c'.repeat(24)}`;
+    const issues = data.get(`/data/${manifest.files.issues}`) as PublicIssue[];
+    issues[0].occurrence_count++;
+    issues.push({ ...issues[0], id: foreignIssue, occurrence_count: 1,
+      documents: [{ ...issues[0].documents[0], id: 'd'.repeat(64) }] });
+    manifest.counts.items++;
+    manifest.counts.occurrences += 2;
+    manifest.counts.issues++;
+    manifest.counts.documents++;
+    const foreignPath = `versions/${DATA_VERSION}/facts/${foreignIssue}.json`;
+    manifest.files.partitions[foreignIssue] = foreignPath;
+    const current = encoded.partitions[ISSUE_ID];
+    current.owners[foreignItem] = foreignIssue;
+    current.occurrences.push({ ...current.occurrences[0], id: foreignOld, item_id: foreignItem, order: 2 });
+    data.set(`/data/${foreignPath}`, {
+      messages: [{ ...current.messages[0], id: foreignItem, aliases: [], latest_occurrence_id: foreignLatest, occurrence_count: 2 }],
+      owners: { [foreignItem]: foreignIssue },
+      occurrences: [{ ...current.occurrences[0], id: foreignLatest, item_id: foreignItem, document_id: 'd'.repeat(64), order: 3 }],
+    });
+    encoded.itemIndex.push({ id: foreignItem, aliases: [], latest_occurrence_id: foreignLatest, occurrence_count: 2,
+      owner: foreignIssue, occurrences: [{ id: foreignOld, part: ISSUE_ID }, { id: foreignLatest, part: foreignIssue }] });
+    const dataset = await loadDataset();
+    expect((await dataset.loadItem(alias)).id).toBe(ITEM_ID);
+    expect(requests).not.toContain(`/data/${foreignPath}`);
+  });
+
+  it('resolves aliases and reconstructs each selected occurrence with its own details', async () => {
+    const { alias, oldOccurrence, manifest, requests } = fixture();
+    const dataset = await loadDataset();
+    const detail = await dataset.loadItem(alias);
+    expect(dataset.canonicalItemId(alias)).toBe(ITEM_ID);
+    expect(detail.occurrences.map((row) => row.id)).toEqual([OCCURRENCE_ID, oldOccurrence]);
+    expect(detail.occurrences[1].body_text).toBe('旧正文');
+    expect(requests).toContain(`/data/${manifest.files.item_index}`);
+    expect(requests.some((path) => /catalog\.json|search-documents\.json/.test(path))).toBe(false);
+  });
+
+  it('rejects malformed owners and retries aborted requests', async () => {
+    const { encoded, oldIssue } = fixture();
+    const dataset = await loadDataset();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(dataset.loadIssue(oldIssue, controller.signal)).rejects.toThrow();
+    encoded.partitions[oldIssue].owners[ITEM_ID] = 'missing';
+    await expect(dataset.loadIssue(oldIssue)).rejects.toThrow();
+    encoded.partitions[oldIssue].owners[ITEM_ID] = ISSUE_ID;
+    await expect(dataset.loadIssue(oldIssue)).resolves.toMatchObject({ occurrences: [{ id: expect.any(String) }] });
+  });
+
+  it('coalesces a partition fetch without cancelling another caller', async () => {
+    const { data, manifest } = fixture();
+    const dataset = await loadDataset();
+    const gate = Promise.withResolvers<Response>();
+    const fetcher = vi.fn(() => gate.promise);
+    vi.stubGlobal('fetch', fetcher);
+    const controller = new AbortController();
+    const cancelled = dataset.loadIssue(ISSUE_ID, controller.signal);
+    const survivor = dataset.loadIssue(ISSUE_ID);
+    controller.abort();
+    await expect(cancelled).rejects.toThrow();
+    gate.resolve(new Response(JSON.stringify(data.get(`/data/${manifest.files.partitions[ISSUE_ID]}`))));
+    await expect(survivor).resolves.toMatchObject({ occurrences: [{ id: OCCURRENCE_ID }] });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not request a details shard for fact-only rows', async () => {
+    const date = { ...dateFixture(), raw_text: '2026-11-02', evidence: '' };
+    const row = occurrenceFixture({ dates: [date], body_text: '', date_review: null, original_dates: [], primary_images: [] });
+    const { encoded, requests } = fixture(row, true);
+    expect(Object.keys(encoded.detailShards)).toHaveLength(0);
+    const dataset = await loadDataset();
+    expect((await dataset.loadItem(ITEM_ID)).occurrences).toHaveLength(2);
+    expect(requests.some((path) => path.includes('/details/'))).toBe(false);
+  });
+
+  it('preserves reviewed manual activity in normalized details', async () => {
+    fixture(manualOccurrence());
+    const dataset = await loadDataset();
+    const detail = await dataset.loadItem(ITEM_ID);
+    expect(detail.occurrences[0].manual_review?.activity?.content).toBe('人工核实的完整活动正文');
+    expect(detail.occurrences[0].content_status).toBe('human_verified');
   });
 });
