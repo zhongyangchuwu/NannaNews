@@ -40,6 +40,7 @@ venv/
 /src/*.egg-info/
 reader/node_modules/
 reader/dist/
+reader/.reader-site/
 reader/public/data/
 !/reader/public/activity-facts.json
 reader/*.tsbuildinfo

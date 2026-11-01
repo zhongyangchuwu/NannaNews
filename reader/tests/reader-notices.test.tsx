@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
-import type { ActivityReview, ManualActivity, PublicDocument, PublicOccurrence, ReaderState } from '../src/types';
+import type { ActivityReview, CatalogOccurrence, ManualActivity, PublicDocument, PublicOccurrence, ReaderState } from '../src/types';
 import { defaultFilters } from '../src/filter';
 import { EditionPage } from '../src/components/EditionPage';
 import { IssueArchive } from '../src/components/IssueArchive';
 import { ItemDetail } from '../src/components/ItemDetail';
+import { encodePartitionedFacts, decodePartition, decodeItemDetail } from '../src/public-format.mjs';
 
 const ITEM_ID = `item-${'1'.repeat(24)}`;
 const OCC_ID = `occ-${'2'.repeat(24)}`;
@@ -236,5 +237,39 @@ describe('original document formats', () => {
     expect(unmatchedMarkup).toContain('未找到与这条消息匹配的原始文件');
     expect(unmatchedMarkup).not.toContain('/data/unrelated.pdf');
     expect(unmatchedMarkup).not.toContain('打开历史原始 PDF');
+  });
+});
+
+describe('legacy dates through normalized detail reconstruction', () => {
+  it.each([true, false])('preserves the historical-date fallback when original_dates is absent: %s', (absent) => {
+    const row = occurrence({ content_status: 'legacy', date_review: null,
+      dates: [{ kind: 'deadline', normalized_date: '2026-10-01', resolution: 'explicit',
+        raw_text: '10月1日', evidence: 'Legacy calendar evidence' }] });
+    if (absent) delete row.original_dates;
+    else row.original_dates = [];
+    const reader = state(row, [documentFixture('html')]);
+    const fact: CatalogOccurrence = {
+      id: row.id, item_id: row.item_id, issue_id: row.issue_id, document_id: row.document_id,
+      kind: row.kind, title: row.title, preview: row.preview, category: row.category,
+      issue_date: row.issue_date, source_urls: row.source_urls, source_hosts: row.source_hosts,
+      colleges: row.colleges, dates: row.dates.map(({ raw_text, evidence, ...date }) => date),
+      expiry_date: row.expiry_date, image_count: row.image_count, content_status: row.content_status,
+    };
+    const catalog = { items: [{ id: ITEM_ID, aliases: [], latest_occurrence_id: OCC_ID,
+      occurrence_count: 1, detail_path: `versions/${reader.manifest!.data_version}/items/11.json` }],
+      occurrences: [fact] };
+    const wire = encodePartitionedFacts(catalog, reader.issues,
+      { [ITEM_ID]: reader.selectedItem! }, reader.manifest!);
+    const part = wire.partitions[ISSUE_ID];
+    const records = decodePartition(part, ISSUE_ID, new Map(part.messages.map((message) => [message.id, message])));
+    const rebuilt = decodeItemDetail(wire.itemIndex[0], records, wire.detailShards['11']?.[ITEM_ID]).occurrences[0];
+    const html = detail(rebuilt);
+    if (absent) {
+      expect(rebuilt.original_dates).toBeUndefined();
+      expect(html).toContain('Legacy calendar evidence');
+    } else {
+      expect(rebuilt.original_dates).toEqual([]);
+      expect(html).not.toContain('Legacy calendar evidence');
+    }
   });
 });

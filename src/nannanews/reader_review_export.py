@@ -22,7 +22,7 @@ from nannanews.public_metadata_export import build_public_facts
 from nannanews.reader_reviews import ReviewError, ReviewStore, validate_payload
 from nannanews.static_export import (
     GENERATOR, StaticExportError, _existing_manifest, _json, _manifest_files, _manifest_paths,
-    _no_symlinks, _publish, _write_catalog_projections,
+    _no_symlinks, _publish,
 )
 
 _HASH = re.compile(r'[0-9a-f]{64}\Z')
@@ -67,13 +67,25 @@ def _relative(value, version, pattern):
     return relative
 
 
-def _manifest(root):
+def _manifest(root, *, site=False):
     result = _existing_manifest(root, True)
-    if (not result or result['schema_version'] != 2 or result['generator'] != GENERATOR
+    allowed = (2, 3) if site else (2,)
+    if (not result or result['schema_version'] not in allowed
             or any(type(result.get('counts', {}).get(key)) is not int
                    or result['counts'][key] < 0 for key in _COUNTS)
-            or not isinstance(result.get('content_rules_version'), str)):
-        raise ReviewPublishError('发布需要有效的第二版公开数据包。')
+            or (not site and not isinstance(result.get('content_rules_version'), str))):
+        raise ReviewPublishError('发布需要有效的公开数据包。')
+    if result['schema_version'] == 3:
+        files = result['files']
+        issues = _read_json(root / files['issues'])
+        items = _read_json(root / files['item_index'])
+        if (not isinstance(issues, list) or len(issues) != result['counts']['issues']
+                or not isinstance(items, list) or len(items) != result['counts']['items']
+                or {issue['id'] for issue in issues} != set(files['partitions']) - {'standalone'}):
+            raise ReviewPublishError('公开数据构建结果结构不匹配。')
+        for relative in _manifest_paths(files, result['data_version'], 3):
+            if not (root / relative).is_file():
+                raise ReviewPublishError('公开数据构建结果缺少必要文件。')
     return result
 
 
@@ -424,11 +436,9 @@ def _prepare(stage, source, snapshot, revisions):
         (payload / name).write_bytes(_json(value))
         del value
         item = issue = document = detail = occurrence = image = None
-    projections = _write_catalog_projections(payload, _read_json(payload / 'catalog.json'),
-                                             _read_json(payload / 'issues.json'), version)
     (stage / 'versions').mkdir()
     os.rename(payload, stage / 'versions' / version)
-    manifest = dict(base, data_version=version, files={**_manifest_files(version), **projections}, counts=counts,
+    manifest = dict(base, data_version=version, files=_manifest_files(version), counts=counts,
                     generated_at=generated_at, review_base_version=old)
     (stage / 'manifest.json').write_bytes(_json(manifest))
     return version, affected_count, sorted(affected_issues)
@@ -445,9 +455,6 @@ def _run_builder(node, script, arguments, label):
         raise ReviewPublishError(f'{label}失败；请检查本机 Node、依赖和构建脚本配置后重试。') from None
 
 
-def _copy_stage(source, target):
-    shutil.copytree(source / 'versions', target / 'versions', copy_function=os.link)
-    shutil.copyfile(source / 'manifest.json', target / 'manifest.json')
 
 
 def _validate_share_destination(prepared, output):
@@ -508,8 +515,8 @@ def publish_reviews(*, settings=None, actor):
             raise ReviewPublishError('发布人身份无效，未发布。')
         source = _public_root(settings.reader_data_dir, settings)
         site = _public_root(settings.reader_site_data_dir, settings)
-        if source != site and (source.is_relative_to(site) or site.is_relative_to(source)):
-            raise ReviewPublishError('源数据和部署数据不能互相嵌套。')
+        if source == site or source.is_relative_to(site) or site.is_relative_to(source):
+            raise ReviewPublishError('源数据和部署数据必须互相独立。')
         output = site.parent
         _no_symlinks(output)
         builder = settings.reader_search_builder
@@ -517,10 +524,11 @@ def publish_reviews(*, settings=None, actor):
             raise ReviewPublishError('请配置 NANNA_READER_SEARCH_BUILDER 为现有 build-search.mjs。')
         builder = Path(builder).expanduser().absolute()
         share_builder = builder.with_name('build-share.mjs')
-        for script in (builder, share_builder):
+        public_builder = builder.with_name('build-public.mjs')
+        for script in (builder, share_builder, public_builder):
             _no_symlinks(script)
             if not script.is_file():
-                raise ReviewPublishError('本机搜索或分享构建脚本不可用。')
+                raise ReviewPublishError('本机搜索、公开数据或分享构建脚本不可用。')
         node = shutil.which('node')
         if node is None:
             raise ReviewPublishError('本机 Node 不可用，无法构建真实搜索索引。')
@@ -531,7 +539,7 @@ def publish_reviews(*, settings=None, actor):
             if not revisions:
                 raise ReviewPublishError('没有已保存的人工核查修改可发布。')
             source_previous = _manifest(source)
-            site_previous = _manifest(site)
+            site_previous = _manifest(site, site=True)
             if source_previous != snapshot['active_manifest']:
                 raise ReviewPublishError('公开源数据已变化，请重新查看后发布。')
             stage = Path(tempfile.mkdtemp(prefix='.reader-review-', dir=source.parent))
@@ -545,6 +553,13 @@ def publish_reviews(*, settings=None, actor):
             if (not isinstance(index, dict) or index.get('documentCount') != expected_count
                     or index.get('serializationVersion') != 2 or not isinstance(index.get('index'), list)):
                 raise ReviewPublishError('搜索构建器未生成完整 MiniSearch 索引。')
+            site_stage = Path(tempfile.mkdtemp(prefix='.reader-review-', dir=site.parent))
+            stages.append(site_stage)
+            _run_builder(node, public_builder, [stage, site_stage], '公开数据构建')
+            deployed = _manifest(site_stage, site=True)
+            if (deployed['schema_version'] != 3 or deployed['data_version'] != version
+                    or deployed['counts'] != staged_manifest['counts']):
+                raise ReviewPublishError('公开数据构建结果版本或数量不匹配。')
             del index, staged_manifest
             shares = Path(tempfile.mkdtemp(prefix='.reader-share-', dir=output))
             stages.append(shares)
@@ -555,22 +570,15 @@ def publish_reviews(*, settings=None, actor):
             expected_pages = affected_count + len(issue_ids)
             if len(list((shares / 'share').rglob('index.html'))) != expected_pages:
                 raise ReviewPublishError('分享构建器未生成全部受影响页面。')
-            if source == site:
-                site_stage = stage
-            else:
-                site_stage = Path(tempfile.mkdtemp(prefix='.reader-review-', dir=site.parent))
-                stages.append(site_stage)
-                _copy_stage(stage, site_stage)
             _validate_share_destination(shares, output)
             # Last guard before the first visible mutation. Native _publish also
             # compares each destination's manifest immediately before its switch.
-            if _manifest(source) != snapshot['active_manifest'] or _manifest(site) != site_previous:
+            if _manifest(source) != snapshot['active_manifest'] or _manifest(site, site=True) != site_previous:
                 raise ReviewPublishError('准备期间公开数据已变化，未切换发布。')
             store.record_preparation(actor=actor, snapshot=snapshot, result=result)
             _publish(stage, source, version, source_previous)
             result['source_published'] = True
-            if source != site:
-                _publish(site_stage, site, version, site_previous)
+            _publish(site_stage, site, version, site_previous)
             result['site_published'] = True
             _install_shares(shares, output)
             result['share_updated'] = True

@@ -71,7 +71,7 @@ export interface PublicOccurrence extends Omit<CatalogOccurrence, 'dates' | 'man
   images: PublicImage[]; primary_images?: PublicImage[]; locator: { page?: number; anchor?: string };
   table_cells: { header: string; text: string }[];
 }
-export interface CatalogItem { id: string; aliases: string[]; latest_occurrence_id: string; occurrence_count: number; detail_path: string }
+export interface CatalogItem { id: string; aliases: string[]; latest_occurrence_id: string; occurrence_count: number; detail_path?: string }
 export interface PublicItemDetail { id: string; latest_occurrence_id: string; occurrences: PublicOccurrence[] }
 export interface Catalog { items: CatalogItem[]; occurrences: CatalogOccurrence[] }
 export interface PublicDocument {
@@ -83,14 +83,14 @@ export interface PublicIssue {
   id: string; title: string; issue_date: string | null; issue_number: number | null;
   occurrence_count: number; documents: PublicDocument[];
 }
-export interface Manifest {
-  schema_version: 2; generator: 'webnews-static-v2'; data_version: string; generated_at?: string;
-  content_rules_version?: string;
-  public_facts_only?: boolean;
+interface ManifestBase {
+  data_version: string; generated_at?: string; content_rules_version?: string; public_facts_only?: boolean;
   counts: { items: number; occurrences: number; issues: number; documents: number; images: number; pdfs: number };
-  files: { catalog: string; issues: string; search_documents: string; search_index: string;
-    issue_catalogs?: Record<string, string>; item_index?: string };
 }
+export type Manifest = ManifestBase & (
+  | { schema_version: 2; generator: 'webnews-static-v2'; files: { catalog: string; issues: string; search_documents: string; search_index: string; issue_catalogs?: Record<string, string>; item_index?: string } }
+  | { schema_version: 3; generator: 'nannanews-reader-v3'; files: { issues: string; item_index: string; partitions: Record<string, string>; search_index: string } }
+);
 export interface Filters {
   q: string; category: string[]; college: string[]; source: string[];
   issue_from: string; issue_to: string; date_type: DateKind; date_from: string; date_to: string;

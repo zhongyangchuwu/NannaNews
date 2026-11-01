@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { manualReviewStampData } from '../src/review-validation.mjs';
 
 const defaultOutputRoot = fileURLToPath(new URL('../dist/', import.meta.url));
-const defaultDataRoot = join(defaultOutputRoot, 'data');
+const defaultDataRoot = fileURLToPath(new URL('../public/data/', import.meta.url));
 const ITEM_ID = /^item-[a-f0-9]{24}$/;
 const OCCURRENCE_ID = /^occ-[a-f0-9]{24}$/;
 const ISSUE_ID = /^issue-[a-f0-9]{24}$/;

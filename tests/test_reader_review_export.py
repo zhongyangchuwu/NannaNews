@@ -40,6 +40,24 @@ def load(root):
         details.update(json.loads((root / relative).read_bytes()))
     return manifest, catalog, details
 
+def load_site(root):
+    script = r"""import fs from 'node:fs'; import path from 'node:path';
+import {decodePartition, decodeItemDetail} from './src/public-format.mjs';
+const root = process.argv[1], read = p => JSON.parse(fs.readFileSync(path.join(root, p), 'utf8'));
+const manifest = read('manifest.json'), parts = Object.fromEntries(Object.entries(manifest.files.partitions).map(([k,p]) => [k,read(p)]));
+const owners = new Map(Object.values(parts).flatMap(p => p.messages).map(m => [m.id,m]));
+const records = Object.entries(parts).flatMap(([k,p]) => decodePartition(p,k,owners).map((row,i) => [p.occurrences[i].order,row])).sort((a,b) => a[0]-b[0]).map(x => x[1]);
+const byId = new Map(records.map(row => [row.id,row]));
+const items = read(manifest.files.item_index), details = {};
+for (const item of items) {
+  const extras = item.detail_path ? read(item.detail_path)[item.id] : undefined;
+  details[item.id] = decodeItemDetail(item,item.occurrences.map(ref => byId.get(ref.id)),extras);
+}
+console.log(JSON.stringify({manifest, records, details}));"""
+    result = subprocess.run(['node', '--input-type=module', '-e', script, str(root)],
+                            cwd=READER, capture_output=True, text=True, check=True, timeout=30)
+    return json.loads(result.stdout)
+
 
 def payload(status='verified', title='人工修正的活动'):
     return {'status': status, 'reason': '管理员已核对公开材料，纠正活动内容。', 'activity': {
@@ -170,15 +188,16 @@ def test_publish_all_occurrences_preserves_raw_history_and_updates_search_share(
                       'revision_count': 1, 'occurrence_count': 2}
     manifest, catalog, details = load(source)
     assert result['version'] == manifest['data_version'] != BASE
-    assert load(settings.reader_site_data_dir)[0] == manifest
+    site = load_site(settings.reader_site_data_dir)
+    assert site['manifest']['schema_version'] == 3
+    assert site['manifest']['data_version'] == manifest['data_version']
+    assert site['manifest']['counts'] == manifest['counts']
+    assert site['records'] == catalog['occurrences']
+    assert set(manifest['files']) == {'catalog', 'issues', 'search_documents', 'search_index'}
+    version_dir = settings.reader_site_data_dir / 'versions' / result['version']
+    assert not any((version_dir / name).exists() for name in
+                   ('catalog.json', 'search-documents.json', 'activity-facts.json', 'issue-catalogs', 'items'))
     assert manifest['review_base_version'] == BASE
-    assert json.loads((source / manifest['files']['item_index']).read_bytes()) == catalog['items']
-    for issue_id in ISSUES:
-        issue_catalog = json.loads((source / manifest['files']['issue_catalogs'][issue_id]).read_bytes())
-        assert issue_catalog['occurrences'] == [row for row in catalog['occurrences'] if row['issue_id'] == issue_id]
-        reviewed = next(row for row in issue_catalog['occurrences'] if row['item_id'] == ITEM)
-        assert reviewed['manual_review']['revision'] == revision['revision']
-        assert 'activity' not in reviewed['manual_review'] and 'body_text' not in reviewed
     for row in catalog['occurrences'][:2]:
         assert row['title'] == payload()['activity']['title']
         assert row['preview'] == payload()['activity']['summary']
@@ -201,7 +220,11 @@ def test_publish_all_occurrences_preserves_raw_history_and_updates_search_share(
             assert new[key] == old[key]
         assert new['manual_review']['activity'] == payload()['activity']
         assert 'actor' not in new['manual_review']
-    assert catalog['occurrences'][2] == load(settings.reader_site_data_dir)[1]['occurrences'][2]
+    for identity, source_detail in details.items():
+        for source_row, site_row in zip(source_detail['occurrences'], site['details'][identity]['occurrences']):
+            for key in source_row:
+                assert site_row[key] == source_row[key]
+    assert catalog['occurrences'][2] == site['records'][2]
     assert catalog['occurrences'][2] == json.loads(original[Path('versions') / BASE / 'catalog.json'])['occurrences'][2]
     for relative, contents in original.items():
         assert (source / relative).read_bytes() == contents
@@ -233,32 +256,103 @@ console.log(JSON.stringify(index.search('HumanSearchNeedle').map(row=>row.id)));
     assert store.get_item(ITEM)['unpublished'] is False
 
 
-def test_additive_base_manifest_remains_readable_and_publishes_new_projections_twice(pack, node_builders):
+def test_legacy_site_migrates_and_next_publication_updates_v3(pack, node_builders):
     settings, store, _, _ = pack
     for root in (settings.reader_data_dir, settings.reader_site_data_dir):
-        manifest, catalog, _ = load(root)
-        issues = json.loads((root / manifest['files']['issues']).read_bytes())
-        manifest['files'].update(static_export._write_catalog_projections(root / 'versions' / BASE, catalog, issues, BASE))
+        manifest, _, _ = load(root)
+        prefix = 'versions/' + BASE + '/'
+        manifest['files'].update(item_index=prefix + 'item-index.json', issue_catalogs={
+            issue: prefix + 'issue-catalogs/' + issue + '.json' for issue in ISSUES})
         (root / 'manifest.json').write_bytes(_json(manifest))
     assert store.get_item(ITEM)['base_version'] == BASE
     first_revision = save(store)
     first = publisher.publish_reviews(settings=settings, actor=PRIVATE)
-    first_manifest, _, _ = load(settings.reader_data_dir)
-    assert first_manifest['files']['item_index'].startswith('versions/' + first['version'] + '/')
+    first_site = load_site(settings.reader_site_data_dir)
+    assert first_site['manifest']['schema_version'] == 3
     second_revision = save(store, payload(title='第二次人工修订'), expected=first_revision['revision'])
     second = publisher.publish_reviews(settings=settings, actor=PRIVATE)
     manifest, catalog, _ = load(settings.reader_data_dir)
+    site = load_site(settings.reader_site_data_dir)
     assert second['version'] != first['version']
-    assert manifest['files']['item_index'].startswith('versions/' + second['version'] + '/')
-    assert json.loads((settings.reader_data_dir / manifest['files']['item_index']).read_bytes()) == catalog['items']
-    for issue_id in ISSUES:
-        relative = manifest['files']['issue_catalogs'][issue_id]
-        assert relative.startswith('versions/' + second['version'] + '/')
-        issue = json.loads((settings.reader_data_dir / relative).read_bytes())
-        reviewed = next(row for row in issue['occurrences'] if row['item_id'] == ITEM)
+    assert site['manifest']['schema_version'] == 3 and site['manifest']['data_version'] == second['version']
+    assert site['records'] == catalog['occurrences']
+    assert (settings.reader_site_data_dir / 'versions' / first['version']).is_dir()
+    for reviewed in (row for row in site['records'] if row['item_id'] == ITEM):
         assert reviewed['title'] == '第二次人工修订'
         assert reviewed['manual_review']['revision'] == second_revision['revision']
         assert 'activity' not in reviewed['manual_review']
+
+
+@pytest.mark.parametrize('fail_site_once', [False, True])
+def test_republish_legacy_same_version_preserves_v2_and_retries(pack, node_builders, monkeypatch, fail_site_once):
+    settings, store, _, _ = pack
+    revision = save(store)
+    first = publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    version = first['version']
+    source = settings.reader_data_dir
+    site = settings.reader_site_data_dir
+    manifest, catalog, _ = load(source)
+    # Model the previously published #4 layout at this exact reviewed version.
+    # Its v2 projections collide with the old v3 paths but must remain immutable.
+    site_version = site / 'versions' / version
+    shutil.rmtree(site_version)
+    shutil.copytree(source / 'versions' / version, site_version)
+    prefix = 'versions/' + version + '/'
+    issues = json.loads((source / manifest['files']['issues']).read_bytes())
+    for root in (source, site):
+        version_root = root / 'versions' / version
+        (version_root / 'item-index.json').write_bytes(_json(catalog['items']))
+        projections = {}
+        for issue in issues:
+            relative = 'issue-catalogs/' + issue['id'] + '.json'
+            target = version_root / relative
+            target.parent.mkdir(exist_ok=True)
+            rows = [row for row in catalog['occurrences'] if row['issue_id'] == issue['id']]
+            target.write_bytes(_json({'items': catalog['items'], 'occurrences': rows}))
+            projections[issue['id']] = prefix + relative
+        old_manifest = dict(manifest, files={**manifest['files'], 'item_index': prefix + 'item-index.json',
+                                             'issue_catalogs': projections})
+        (root / 'manifest.json').write_bytes(_json(old_manifest))
+    old_versions = {root: {path.relative_to(root): path.read_bytes()
+                           for path in (root / 'versions' / version).rglob('*') if path.is_file()}
+                    for root in (source, site)}
+    native_publish = publisher._publish
+    if fail_site_once:
+        def fail_site(stage, output, published_version, previous):
+            if output == site:
+                raise OSError('injected site switch failure')
+            return native_publish(stage, output, published_version, previous)
+        monkeypatch.setattr(publisher, '_publish', fail_site)
+        with pytest.raises(publisher.ReviewPublishError) as caught:
+            publisher.publish_reviews(settings=settings, actor=PRIVATE)
+        assert caught.value.result['version'] == version
+        assert caught.value.result['source_published'] and not caught.value.result['site_published']
+        assert json.loads((site / 'manifest.json').read_bytes())['schema_version'] == 2
+        monkeypatch.setattr(publisher, '_publish', native_publish)
+    result = publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    assert result['version'] == version and result['recorded'] and not result['partial']
+    assert store.get_item(ITEM)['head_revision'] == revision['revision']
+    assert store.get_item(ITEM)['published_revision'] == revision['revision']
+    deployed = load_site(site)
+    assert deployed['manifest']['schema_version'] == 3 and deployed['manifest']['data_version'] == version
+    assert deployed['records'] == catalog['occurrences']
+    assert all(path.startswith(prefix + 'reader-v3/') for path in
+               [deployed['manifest']['files']['issues'], deployed['manifest']['files']['item_index'],
+                deployed['manifest']['files']['search_index'], *deployed['manifest']['files']['partitions'].values()])
+    for root, contents in old_versions.items():
+        assert all((root / path).read_bytes() == data for path, data in contents.items())
+
+
+def test_same_source_and_site_rejected_before_mutation(pack):
+    settings, store, original, _ = pack
+    save(store)
+    settings = replace(settings, reader_site_data_dir=settings.reader_data_dir)
+    before = (settings.reader_data_dir / 'manifest.json').read_bytes()
+    with pytest.raises(publisher.ReviewPublishError):
+        publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    assert (settings.reader_data_dir / 'manifest.json').read_bytes() == before
+    assert all((settings.reader_data_dir / path).read_bytes() == data for path, data in original.items())
+    assert published_map(settings) == []
 
 
 def test_preparation_failure_does_not_switch_either_live_manifest(pack, monkeypatch):
@@ -536,6 +630,10 @@ def test_explicit_publication_adds_standalone_registration_without_a_fake_issue(
     assert detail['body_text'] == '' and detail['date_review'] is None and 'original_dates' not in detail
     assert detail['images'] == detail['primary_images'] == []
     assert detail['manual_review']['activity'] == payload()['activity']
+    site = load_site(settings.reader_site_data_dir)
+    assert site['records'] == catalog['occurrences']
+    assert site['details'][registered['item_id']]['occurrences'][0]['manual_review'] == detail['manual_review']
+    assert 'standalone' in site['manifest']['files']['partitions']
     assert {issue['id'] for issue in json.loads((settings.reader_data_dir / manifest['files']['issues']).read_bytes())} == set(ISSUES)
 
     public_version = settings.reader_data_dir / 'versions' / result['version']
@@ -555,6 +653,24 @@ def test_explicit_publication_adds_standalone_registration_without_a_fake_issue(
     output = tmp_path / 'reader' / 'activity-facts.json'
     public_metadata_export.export_public_facts(settings.reader_data_dir, output)
     assert json.loads(output.read_bytes()) == facts
+def test_empty_source_can_publish_standalone_without_synthetic_issue(pack, node_builders):
+    settings, store, _, _ = pack
+    root = settings.reader_data_dir
+    manifest = json.loads((root / 'manifest.json').read_bytes())
+    manifest['counts'] = dict.fromkeys(('items', 'occurrences', 'issues', 'documents', 'images', 'pdfs'), 0)
+    for key, value in (('catalog', {'items': [], 'occurrences': []}), ('issues', []), ('search_documents', [])):
+        (root / manifest['files'][key]).write_bytes(_json(value))
+    (root / 'manifest.json').write_bytes(_json(manifest))
+    registration = store.register_activity('empty-source-registration', payload(), actor=PRIVATE)
+    store.save(registration['item_id'], payload(), actor=PRIVATE, expected_head=None, base_version=BASE)
+    publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    source_manifest, catalog, _ = load(root)
+    site = load_site(settings.reader_site_data_dir)
+    assert source_manifest['counts']['issues'] == 0
+    assert set(site['manifest']['files']['partitions']) == {'standalone'}
+    assert site['records'] == catalog['occurrences']
+
+
 
 
 def test_private_exact_preparation_precedes_first_live_switch(pack, node_builders, monkeypatch):

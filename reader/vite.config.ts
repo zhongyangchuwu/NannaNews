@@ -30,6 +30,7 @@ function publishReaderData(): Plugin {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), publishReaderData()],
+  publicDir: '.reader-site',
   base: process.env.READER_BASE_PATH || './',
   build: { target: 'es2022', sourcemap: false, copyPublicDir: false },
   server: { host: '127.0.0.1', strictPort: true },

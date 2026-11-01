@@ -558,21 +558,38 @@ def _manifest_files(version):
         'search_documents': 'search-documents.json', 'search_index': 'search-index.json',
     }.items()}
 
-def _manifest_paths(files, version):
-    """Validate the legacy files and optional paired, version-pinned projections."""
-    base = _manifest_files(version)
-    if not isinstance(files, dict) or any(files.get(key) != value for key, value in base.items()):
-        raise ValueError('Invalid manifest files.')
-    extra = set(files) - set(base)
-    if extra not in (set(), {'issue_catalogs', 'item_index'}):
-        raise ValueError('Invalid manifest file pair.')
-    paths = list(base.values())
-    if extra:
-        catalogs = files['issue_catalogs']
-        if not isinstance(catalogs, dict) or any(not isinstance(key, str)
-                or not re.fullmatch(r'issue-[0-9a-f]{24}', key) for key in catalogs):
-            raise ValueError('Invalid issue catalog mapping.')
-        paths.extend([files['item_index'], *catalogs.values()])
+def _manifest_paths(files, version, schema_version=2):
+    """Validate version-pinned source or normalized deployment paths."""
+    prefix = 'versions/' + version + '/'
+    if schema_version == 3:
+        prefix += 'reader-v3/'
+        if not isinstance(files, dict) or set(files) != {'issues', 'item_index', 'partitions', 'search_index'}:
+            raise ValueError('Invalid deployment manifest files.')
+        if (files['issues'] != prefix + 'issues.json'
+                or files['item_index'] != prefix + 'item-index.json'
+                or files['search_index'] != prefix + 'search-index.json'):
+            raise ValueError('Invalid deployment manifest paths.')
+        partitions = files['partitions']
+        if not isinstance(partitions, dict) or any(
+                not isinstance(key, str) or not re.fullmatch(r'issue-[0-9a-f]{24}|standalone', key)
+                or value != prefix + 'facts/' + key + '.json'
+                for key, value in partitions.items()):
+            raise ValueError('Invalid partition mapping.')
+        paths = [files['issues'], files['item_index'], files['search_index'], *partitions.values()]
+    else:
+        base = _manifest_files(version)
+        if not isinstance(files, dict) or any(files.get(key) != value for key, value in base.items()):
+            raise ValueError('Invalid manifest files.')
+        extra = set(files) - set(base)
+        if extra not in (set(), {'issue_catalogs', 'item_index'}):
+            raise ValueError('Invalid manifest file pair.')
+        paths = list(base.values())
+        if extra:
+            catalogs = files['issue_catalogs']
+            if not isinstance(catalogs, dict) or any(not isinstance(key, str)
+                    or not re.fullmatch(r'issue-[0-9a-f]{24}', key) for key in catalogs):
+                raise ValueError('Invalid issue catalog mapping.')
+            paths.extend([files['item_index'], *catalogs.values()])
     prefix = 'versions/' + version + '/'
     for relative in paths:
         if (not isinstance(relative, str) or not relative.startswith(prefix) or not relative.endswith('.json')
@@ -582,74 +599,6 @@ def _manifest_paths(files, version):
     if len(set(paths)) != len(paths):
         raise ValueError('Duplicate manifest path.')
     return paths
-
-
-def _write_catalog_projections(payload, catalog, issues, version):
-    """Write catalog-only projections after detail paths are version-prefixed."""
-    item_keys = ('id', 'aliases', 'latest_occurrence_id', 'occurrence_count', 'detail_path')
-    occurrence_keys = ('id', 'item_id', 'issue_id', 'document_id', 'kind', 'title', 'category', 'preview',
-                       'issue_date', 'source_urls', 'source_hosts', 'colleges', 'activity_id', 'source_id',
-                       'expiry_date', 'image_count', 'content_status')
-    def select(value, keys):
-        return {key: value[key] for key in keys if key in value}
-
-    items = {item['id']: select(item, item_keys) for item in catalog['items']}
-    if len(items) != len(catalog['items']):
-        raise StaticExportError('Duplicate catalog items.')
-    rows = {issue['id']: [] for issue in issues}
-    if len(rows) != len(issues) or any(not re.fullmatch(r'issue-[0-9a-f]{24}', issue_id) for issue_id in rows):
-        raise StaticExportError('Invalid catalog issue identifiers.')
-    documents = {}
-    for issue in issues:
-        for document in issue['documents']:
-            if document['id'] in documents:
-                raise StaticExportError('Duplicate catalog issue document.')
-            documents[document['id']] = issue['id']
-    item_occurrences = defaultdict(set)
-    seen = set()
-    for occurrence in catalog['occurrences']:
-        item_id, identity, issue_id = occurrence['item_id'], occurrence['id'], occurrence['issue_id']
-        if item_id not in items or identity in seen:
-            raise StaticExportError('Invalid catalog occurrence membership.')
-        seen.add(identity)
-        item_occurrences[item_id].add(identity)
-        if occurrence['kind'] == 'standalone':
-            if issue_id is not None or occurrence['document_id'] is not None:
-                raise StaticExportError('Invalid standalone catalog occurrence.')
-            continue
-        if issue_id not in rows or documents.get(occurrence['document_id']) != issue_id:
-            raise StaticExportError('Invalid catalog issue membership.')
-        row = select(occurrence, occurrence_keys)
-        row['dates'] = [select(date, ('kind', 'normalized_date', 'resolution', 'literal_source'))
-                        for date in occurrence['dates']]
-        if 'activity_facts' in occurrence:
-            row['activity_facts'] = select(occurrence['activity_facts'], ('venue', 'audience', 'participation', 'time'))
-        if 'manual_review' in occurrence:
-            row['manual_review'] = select(occurrence['manual_review'], ('revision', 'status', 'reviewed_at', 'reason'))
-        if 'source_corrections' in occurrence:
-            row['source_corrections'] = [select(value, ('original_url', 'corrected_url', 'reason', 'title', 'sha256', 'fetched_at'))
-                                         for value in occurrence['source_corrections']]
-        rows[issue_id].append(row)
-    for item_id, item in items.items():
-        if (len(item_occurrences[item_id]) != item['occurrence_count']
-                or item['latest_occurrence_id'] not in item_occurrences[item_id]):
-            raise StaticExportError('Catalog item occurrence counts do not match.')
-    prefix = 'versions/' + version + '/'
-    issue_catalogs = {}
-    for issue in issues:
-        issue_id = issue['id']
-        occurrences = rows[issue_id]
-        if len(occurrences) != issue['occurrence_count']:
-            raise StaticExportError('Catalog issue occurrence counts do not match.')
-        item_ids = dict.fromkeys(row['item_id'] for row in occurrences)
-        relative = 'issue-catalogs/' + issue_id + '.json'
-        target = payload / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(_json({'items': [items[item_id] for item_id in item_ids],
-                                  'occurrences': occurrences}))
-        issue_catalogs[issue_id] = prefix + relative
-    (payload / 'item-index.json').write_bytes(_json(list(items.values())))
-    return {'issue_catalogs': issue_catalogs, 'item_index': prefix + 'item-index.json'}
 
 
 def _existing_manifest(output, replace):
@@ -664,10 +613,10 @@ def _existing_manifest(output, replace):
             raise ValueError
         manifest = json.loads(manifest_path.read_bytes())
         version = manifest['data_version']
-        if ((manifest['schema_version'], manifest['generator']) not in {(1, 'webnews-static-v1'), (2, GENERATOR)}
+        if ((manifest['schema_version'], manifest['generator']) not in {(1, 'webnews-static-v1'), (2, GENERATOR), (3, 'nannanews-reader-v3')}
                 or not isinstance(version, str) or not _HASH.fullmatch(version)):
             raise ValueError
-        for relative in _manifest_paths(manifest['files'], version):
+        for relative in _manifest_paths(manifest['files'], version, manifest['schema_version']):
             _no_symlinks(output / relative)
     except (OSError, ValueError, KeyError, TypeError):
         raise StaticExportError('Replacement target has no valid generated manifest.') from None
@@ -697,19 +646,19 @@ def _publish(stage, output, version, previous):
             if not target.is_dir():
                 raise StaticExportError('Existing data version is not a directory.')
             manifest = json.loads((stage / 'manifest.json').read_bytes())
-            generated = set(_manifest_paths(manifest['files'], version)) - set(_manifest_files(version).values())
+            generated = set(_manifest_paths(manifest['files'], version, manifest['schema_version'])) - set(_manifest_files(version).values())
             missing = []
             for candidate in source.rglob('*'):
                 if candidate.is_file():
                     relative = candidate.relative_to(source)
                     existing = target / relative
                     _no_symlinks(existing)
-                    projection = ('versions/' + version + '/' + relative.as_posix()) in generated
-                    if not existing.exists() and projection:
+                    generated_file = ('versions/' + version + '/' + relative.as_posix()) in generated
+                    if not existing.exists() and (generated_file or manifest['schema_version'] == 3):
                         missing.append((candidate, existing))
                     elif not existing.is_file():
                         raise StaticExportError('Existing immutable version differs from exported content.')
-                    elif projection:
+                    elif generated_file and candidate.suffix == '.json':
                         if json.loads(existing.read_bytes()) != json.loads(candidate.read_bytes()):
                             raise StaticExportError('Existing immutable version differs from exported content.')
                     elif existing.read_bytes() != candidate.read_bytes():
@@ -765,6 +714,8 @@ def export_static(output_dir, *, settings=None, replace=False, held_occurrence_i
             or upload.is_relative_to(output)):
         raise StaticExportError('Public output must be separate from private data and uploads.')
     previous = _existing_manifest(output, replace)
+    if previous is not None and previous['schema_version'] == 3:
+        raise StaticExportError('A deployed v3 dataset cannot be replaced by a native source export.')
     if not database.is_file():
         raise StaticExportError('Bulletin database is unavailable.')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -815,14 +766,13 @@ def export_static(output_dir, *, settings=None, replace=False, held_occurrence_i
             target = payload / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(_json(value))
-        projections = _write_catalog_projections(payload, catalog, issues, version)
         versions = stage / 'versions'
         versions.mkdir()
         os.rename(payload, versions / version)
         manifest = {'schema_version': 2, 'generator': GENERATOR, 'data_version': version,
                     'content_rules_version': RULES_VERSION,
                     'generated_at': datetime.now(timezone.utc).isoformat(),
-                    'counts': counts, 'files': {**_manifest_files(version), **projections}}
+                    'counts': counts, 'files': _manifest_files(version)}
         (stage / 'manifest.json').write_bytes(_json(manifest))
         size = sum(path.stat().st_size for path in stage.rglob('*') if path.is_file())
         _publish(stage, output, version, previous)
