@@ -562,6 +562,7 @@ def _manifest_paths(files, version, schema_version=2):
     """Validate version-pinned source or normalized deployment paths."""
     prefix = 'versions/' + version + '/'
     if schema_version == 3:
+        prefix += 'reader-v3/'
         if not isinstance(files, dict) or set(files) != {'issues', 'item_index', 'partitions', 'search_index'}:
             raise ValueError('Invalid deployment manifest files.')
         if (files['issues'] != prefix + 'issues.json'

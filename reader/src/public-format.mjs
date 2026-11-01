@@ -58,6 +58,8 @@ function detailExtras(row, detail) {
     if (!has(detail, key)) { if (has(row, key)) absent.push(key); }
     else if (!has(row, key) || !equal(value, row[key])) overrides[key] = value;
   }
+  // An omitted original_dates falls back to dates in ItemDetail; [] does not.
+  if (!has(detail, 'original_dates')) absent.push('original_dates');
   if (Object.keys(overrides).length) extra.fact_overrides = overrides;
   if (absent.length) extra.absent_fields = absent;
   if (!Array.isArray(detail.dates)) fail('detail dates');
@@ -136,7 +138,7 @@ export function encodePartitionedFacts(catalog, issues, details, manifest) {
     if (Object.keys(extras.occurrences).length) {
       const bucket = item.id.slice(5, 7);
       (detailShards[bucket] ??= Object.create(null))[item.id] = extras;
-      entry.detail_path = `versions/${manifest.data_version}/details/${bucket}.json`;
+      entry.detail_path = `versions/${manifest.data_version}/reader-v3/details/${bucket}.json`;
     }
     itemIndex.push(entry);
     for (const row of itemRows) {
@@ -219,7 +221,7 @@ export function decodeItemDetail(entry, records, extras) {
       Object.assign(row, values.fact_overrides);
     }
     if (values.absent_fields !== undefined) {
-      if (!Array.isArray(values.absent_fields) || values.absent_fields.some((key) => !FACTS.includes(key) || key === 'dates')) fail('detail absent fields');
+      if (!Array.isArray(values.absent_fields) || values.absent_fields.some((key) => key !== 'original_dates' && (!FACTS.includes(key) || key === 'dates'))) fail('detail absent fields');
       for (const key of values.absent_fields) delete row[key];
     }
     if (!Array.isArray(row.dates)) fail('detail dates');

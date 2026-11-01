@@ -385,7 +385,7 @@ def test_replacement_is_guarded_preserves_unrelated_files_and_built_index(eviden
 def test_native_export_cannot_replace_v3_site(evidence, tmp_path):
     output = tmp_path / 'site-data'
     version = 'a' * 64
-    prefix = 'versions/' + version + '/'
+    prefix = 'versions/' + version + '/reader-v3/'
     issue = 'issue-' + 'b' * 24
     files = {'issues': prefix + 'issues.json', 'item_index': prefix + 'item-index.json',
              'search_index': prefix + 'search-index.json',
@@ -446,7 +446,7 @@ def test_replacement_rejects_invalid_projection_manifest(evidence, tmp_path, dam
 @pytest.mark.parametrize('damage', ['traversal', 'wrong-version', 'duplicate', 'extra', 'invalid-partition'])
 def test_v3_manifest_rejects_unsafe_paths(damage):
     version = '1' * 64
-    prefix = 'versions/' + version + '/'
+    prefix = 'versions/' + version + '/reader-v3/'
     issue = 'issue-' + 'a' * 24
     files = {'issues': prefix + 'issues.json', 'item_index': prefix + 'item-index.json',
              'search_index': prefix + 'search-index.json',

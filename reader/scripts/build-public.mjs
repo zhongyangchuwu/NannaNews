@@ -46,7 +46,7 @@ async function ownedOutput(root) {
   const manifest = await json(root, 'manifest.json');
   if (manifest?.schema_version !== 3 || manifest.generator !== 'nannanews-reader-v3' || !/^[a-f0-9]{64}$/.test(manifest.data_version) || !object(manifest.files) || !object(manifest.files.partitions)) fail('output is not owned v3 data');
   const version = manifest.data_version;
-  const prefix = `versions/${version}`;
+  const prefix = `versions/${version}/reader-v3`;
   if (manifest.files.issues !== `${prefix}/issues.json` || manifest.files.item_index !== `${prefix}/item-index.json` || manifest.files.search_index !== `${prefix}/search-index.json`) fail('invalid owned file layout');
   for (const [key, value] of Object.entries(manifest.files.partitions)) if (!/^[A-Za-z0-9_-]+$/.test(key) || value !== `${prefix}/facts/${key}.json`) fail('invalid owned partition layout');
   const expected = new Set(['manifest.json']);
@@ -99,7 +99,7 @@ export async function buildPublic(sourceDir = defaultSource, outputDir = default
   try { await lstat(output); existing = true; } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (existing) await ownedOutput(output);
   const manifest = await json(source, 'manifest.json'); manifestData(manifest);
-  const version = manifest.data_version, prefix = `versions/${version}`;
+  const version = manifest.data_version, prefix = `versions/${version}/reader-v3`;
   const [catalog, issues, documents, indexText] = await Promise.all([
     json(source, manifest.files.catalog, version), json(source, manifest.files.issues, version),
     json(source, manifest.files.search_documents, version), file(source, manifest.files.search_index, version).then((p) => readFile(p, 'utf8')),

@@ -537,7 +537,7 @@ describe('normalized public datasets', () => {
     sourceManifest.counts.issues = 2;
     sourceManifest.counts.documents = 2;
     const encoded = encodePartitionedFacts(catalog, issues, { [ITEM_ID]: detail }, sourceManifest);
-    const prefix = `versions/${DATA_VERSION}`;
+    const prefix = `versions/${DATA_VERSION}/reader-v3`;
     const manifest: Extract<Manifest, { schema_version: 3 }> = {
       schema_version: 3, generator: 'nannanews-reader-v3', data_version: DATA_VERSION,
       counts: sourceManifest.counts,
@@ -593,7 +593,7 @@ describe('normalized public datasets', () => {
     const paths: Record<string, string> = { [ISSUE_ID]: manifest.files.partitions[ISSUE_ID] };
     for (let i = 0; i < 12; i++) {
       const id = `issue-${(100 + i).toString(16).padStart(24, '0')}`;
-      const path = `versions/${DATA_VERSION}/facts/${id}.json`;
+      const path = `versions/${DATA_VERSION}/reader-v3/facts/${id}.json`;
       issues.push({ ...issues[0], id, occurrence_count: 0, documents: [] });
       paths[id] = path;
       data.set(`/data/${path}`, { messages: [], owners: {}, occurrences: [] });
@@ -621,7 +621,7 @@ describe('normalized public datasets', () => {
     manifest.counts.occurrences += 2;
     manifest.counts.issues++;
     manifest.counts.documents++;
-    const foreignPath = `versions/${DATA_VERSION}/facts/${foreignIssue}.json`;
+    const foreignPath = `versions/${DATA_VERSION}/reader-v3/facts/${foreignIssue}.json`;
     manifest.files.partitions[foreignIssue] = foreignPath;
     const current = encoded.partitions[ISSUE_ID];
     current.owners[foreignItem] = foreignIssue;
@@ -659,6 +659,18 @@ describe('normalized public datasets', () => {
     await expect(dataset.loadIssue(oldIssue)).rejects.toThrow();
     encoded.partitions[oldIssue].owners[ITEM_ID] = ISSUE_ID;
     await expect(dataset.loadIssue(oldIssue)).resolves.toMatchObject({ occurrences: [{ id: expect.any(String) }] });
+  });
+
+  it('refetches a repaired owner partition after a missing entity', async () => {
+    const { encoded, oldIssue, manifest, requests } = fixture();
+    const owner = encoded.partitions[ISSUE_ID];
+    const message = owner.messages.pop()!;
+    const dataset = await loadDataset();
+    await expect(dataset.loadIssue(oldIssue)).rejects.toThrow();
+    owner.messages.push(message);
+    await expect(dataset.loadIssue(oldIssue)).resolves.toMatchObject({ occurrences: [{ id: expect.any(String) }] });
+    expect(requests.filter((path) => path === `/data/${manifest.files.partitions[ISSUE_ID]}`)).toHaveLength(2);
+    expect(requests.filter((path) => path === `/data/${manifest.files.partitions[oldIssue]}`)).toHaveLength(2);
   });
 
   it('coalesces a partition fetch without cancelling another caller', async () => {

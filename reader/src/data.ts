@@ -616,25 +616,24 @@ function loadPartitionedDataset(manifest: Extract<Manifest, { schema_version: 3 
   async function decode(key: string, signal?: AbortSignal): Promise<{ rows: Catalog['occurrences']; items: CatalogItem[]; orders: number[]; owners: Record<string, string> }> {
     const part = await partition(key, signal);
     const ownerKeys = [...new Set(Object.values(part.owners))];
-    const ownerParts = await Promise.all(ownerKeys.map((owner) => owner === key ? Promise.resolve(part) : partition(owner, signal)));
-    const owners = new Map<string, WireMessage>();
-    for (let i = 0; i < ownerParts.length; i++) for (const message of ownerParts[i].messages) {
-      if (part.owners[message.id] === ownerKeys[i]) {
-        requireData(!owners.has(message.id));
-        owners.set(message.id, message);
-      }
-    }
-    for (const id of Object.keys(part.owners)) requireData(owners.has(id));
-    let rows: Catalog['occurrences'];
     try {
-      rows = hydrate(part, key, owners);
+      const ownerParts = await Promise.all(ownerKeys.map((owner) => owner === key ? Promise.resolve(part) : partition(owner, signal)));
+      const owners = new Map<string, WireMessage>();
+      for (let i = 0; i < ownerParts.length; i++) for (const message of ownerParts[i].messages) {
+        if (part.owners[message.id] === ownerKeys[i]) {
+          requireData(!owners.has(message.id));
+          owners.set(message.id, message);
+        }
+      }
+      for (const id of Object.keys(part.owners)) requireData(owners.has(id));
+      const rows = hydrate(part, key, owners);
+      const items = [...owners.values()].map(({ id, aliases, latest_occurrence_id, occurrence_count }) => ({ id, aliases, latest_occurrence_id, occurrence_count }));
+      return { rows, items, orders: part.occurrences.map((row) => row.order), owners: part.owners };
     } catch (error) {
       cache.delete(paths[key]);
       for (const owner of ownerKeys) cache.delete(paths[owner]);
       throw error;
     }
-    const items = [...owners.values()].map(({ id, aliases, latest_occurrence_id, occurrence_count }) => ({ id, aliases, latest_occurrence_id, occurrence_count }));
-    return { rows, items, orders: part.occurrences.map((row) => row.order), owners: part.owners };
   }
   async function loadIndex(signal?: AbortSignal): Promise<WireItem[]> {
     if (directory) return directory;

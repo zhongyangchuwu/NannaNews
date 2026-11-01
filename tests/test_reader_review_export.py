@@ -283,6 +283,66 @@ def test_legacy_site_migrates_and_next_publication_updates_v3(pack, node_builder
         assert 'activity' not in reviewed['manual_review']
 
 
+@pytest.mark.parametrize('fail_site_once', [False, True])
+def test_republish_legacy_same_version_preserves_v2_and_retries(pack, node_builders, monkeypatch, fail_site_once):
+    settings, store, _, _ = pack
+    revision = save(store)
+    first = publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    version = first['version']
+    source = settings.reader_data_dir
+    site = settings.reader_site_data_dir
+    manifest, catalog, _ = load(source)
+    # Model the previously published #4 layout at this exact reviewed version.
+    # Its v2 projections collide with the old v3 paths but must remain immutable.
+    site_version = site / 'versions' / version
+    shutil.rmtree(site_version)
+    shutil.copytree(source / 'versions' / version, site_version)
+    prefix = 'versions/' + version + '/'
+    issues = json.loads((source / manifest['files']['issues']).read_bytes())
+    for root in (source, site):
+        version_root = root / 'versions' / version
+        (version_root / 'item-index.json').write_bytes(_json(catalog['items']))
+        projections = {}
+        for issue in issues:
+            relative = 'issue-catalogs/' + issue['id'] + '.json'
+            target = version_root / relative
+            target.parent.mkdir(exist_ok=True)
+            rows = [row for row in catalog['occurrences'] if row['issue_id'] == issue['id']]
+            target.write_bytes(_json({'items': catalog['items'], 'occurrences': rows}))
+            projections[issue['id']] = prefix + relative
+        old_manifest = dict(manifest, files={**manifest['files'], 'item_index': prefix + 'item-index.json',
+                                             'issue_catalogs': projections})
+        (root / 'manifest.json').write_bytes(_json(old_manifest))
+    old_versions = {root: {path.relative_to(root): path.read_bytes()
+                           for path in (root / 'versions' / version).rglob('*') if path.is_file()}
+                    for root in (source, site)}
+    native_publish = publisher._publish
+    if fail_site_once:
+        def fail_site(stage, output, published_version, previous):
+            if output == site:
+                raise OSError('injected site switch failure')
+            return native_publish(stage, output, published_version, previous)
+        monkeypatch.setattr(publisher, '_publish', fail_site)
+        with pytest.raises(publisher.ReviewPublishError) as caught:
+            publisher.publish_reviews(settings=settings, actor=PRIVATE)
+        assert caught.value.result['version'] == version
+        assert caught.value.result['source_published'] and not caught.value.result['site_published']
+        assert json.loads((site / 'manifest.json').read_bytes())['schema_version'] == 2
+        monkeypatch.setattr(publisher, '_publish', native_publish)
+    result = publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    assert result['version'] == version and result['recorded'] and not result['partial']
+    assert store.get_item(ITEM)['head_revision'] == revision['revision']
+    assert store.get_item(ITEM)['published_revision'] == revision['revision']
+    deployed = load_site(site)
+    assert deployed['manifest']['schema_version'] == 3 and deployed['manifest']['data_version'] == version
+    assert deployed['records'] == catalog['occurrences']
+    assert all(path.startswith(prefix + 'reader-v3/') for path in
+               [deployed['manifest']['files']['issues'], deployed['manifest']['files']['item_index'],
+                deployed['manifest']['files']['search_index'], *deployed['manifest']['files']['partitions'].values()])
+    for root, contents in old_versions.items():
+        assert all((root / path).read_bytes() == data for path, data in contents.items())
+
+
 def test_same_source_and_site_rejected_before_mutation(pack):
     settings, store, original, _ = pack
     save(store)

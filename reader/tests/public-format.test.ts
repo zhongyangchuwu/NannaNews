@@ -56,10 +56,23 @@ describe('partitioned public facts', () => {
     const orders = Object.values(wire.partitions).flatMap((p) => p.occurrences).sort((a,b) => a.order-b.order).map((r) => r.id);
     expect(orders).toEqual(ids);
     const entry = wire.itemIndex[0], extras = wire.detailShards['11'][item];
+    expect(entry.detail_path).toBe(`${prefix}/reader-v3/details/11.json`);
     expect(extras.fields.body_text).toEqual(['secret keyword in approved body']);
     expect(decodeItemDetail(entry, entry.occurrences.map((r) => records.get(r.id)!), extras)).toEqual(input.details[item]);
     expect(wire.itemIndex[1].detail_path).toBeUndefined();
     expect(decodeItemDetail(wire.itemIndex[1], [records.get(ids[2])!])).toEqual(input.details[other]);
+  });
+  it('preserves absent versus explicitly empty original dates with populated dates', () => {
+    const input = fixture();
+    const compact = decoded(input);
+    expect(compact.wire.itemIndex[1].detail_path).toBeUndefined();
+    expect(decodeItemDetail(compact.wire.itemIndex[1], [compact.records.get(ids[2])!]).occurrences[0].original_dates).toEqual([]);
+    delete input.details[other].occurrences[0].original_dates;
+    const absent = decoded(input), entry = absent.wire.itemIndex[1];
+    const detail = decodeItemDetail(entry, [absent.records.get(ids[2])!], absent.wire.detailShards['22'][other]);
+    expect(detail.occurrences[0].dates).toHaveLength(1);
+    expect(Object.hasOwn(detail.occurrences[0], 'original_dates')).toBe(false);
+    expect(detail).toEqual(input.details[other]);
   });
   it('preserves manual activity, date variants and optional absent versus null facts', () => {
     const input = fixture();
@@ -128,11 +141,20 @@ describe('public packer', () => {
   it('publishes only v3 files, preserves actual full-text index and safely replaces owned output', async () => {
     const root = await mkdtemp(join(tmpdir(),'public-pack-'));
     try {
-      const {sourceDir,outputDir} = await dataset(root); await mkdir(outputDir);
+      const {sourceDir,outputDir,input} = await dataset(root); await mkdir(outputDir);
+      const sourceIssues = await readFile(join(sourceDir,input.manifest.files.issues));
       await buildPublic(sourceDir,outputDir); await buildPublic(sourceDir,outputDir);
+      expect(await readFile(join(sourceDir,input.manifest.files.issues))).toEqual(sourceIssues);
       const manifest = JSON.parse(await readFile(join(outputDir,'manifest.json'),'utf8'));
       expect(manifest.schema_version).toBe(3); expect(manifest.files.catalog).toBeUndefined(); expect(manifest.files.search_documents).toBeUndefined();
-      expect(await readdir(join(outputDir,prefix))).not.toContain('items');
+      expect(manifest.data_version).toBe(version);
+      expect(manifest.files.issues).toBe(`${prefix}/reader-v3/issues.json`);
+      expect(manifest.files.item_index).toBe(`${prefix}/reader-v3/item-index.json`);
+      expect(manifest.files.search_index).toBe(`${prefix}/reader-v3/search-index.json`);
+      expect(manifest.files.partitions[issueNew]).toBe(`${prefix}/reader-v3/facts/${issueNew}.json`);
+      const publishedItems = JSON.parse(await readFile(join(outputDir,manifest.files.item_index),'utf8'));
+      expect(publishedItems[0].detail_path).toBe(`${prefix}/reader-v3/details/11.json`);
+      expect(await readdir(join(outputDir,prefix))).toEqual(['reader-v3']);
       const search = MiniSearch.loadJSON(await readFile(join(outputDir,manifest.files.search_index),'utf8'), searchOptions);
       expect(search.search('fulltext').map((r) => r.id)).toEqual([ids[1]]);
       await writeFile(join(outputDir,'unrelated'),'keep');
