@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { StaticDataset } from '../src/data';
 import type { ActivityReview, Catalog, Manifest, ManualActivity, PublicDate, PublicIssue, PublicOccurrence, SourceReview } from '../src/types';
-import { currentActivityDate } from '../src/filter';
+import { currentActivityDate, defaultFilters, originalHosts, queryCatalog, sourceTypesForHosts } from '../src/filter';
 import { encodePartitionedFacts } from '../src/public-format.mjs';
 
 const DATA_VERSION = 'a'.repeat(64);
@@ -555,8 +555,185 @@ describe('normalized public datasets', () => {
       const value = data.get(path);
       return new Response(JSON.stringify(value ?? null), { status: value === undefined ? 404 : 200 });
     });
-    return { data, manifest, encoded, requests, oldIssue, oldOccurrence, alias };
+    return { data, manifest, encoded, requests, oldIssue, oldOccurrence, alias, catalog };
   }
+
+  function addSelection(f: { manifest: Extract<Manifest, { schema_version: 3 }>; data: Map<string, unknown>; catalog: Catalog }) {
+    const path = `versions/${DATA_VERSION}/reader-v3/selection-index.json`;
+    f.manifest.files.selection_index = path;
+    f.data.set(`/data/${path}`, { aliases: Object.fromEntries(f.catalog.items.flatMap((item) => item.aliases.map((alias) => [alias, item.id]))), occurrences: f.catalog.occurrences.map((row) => {
+      const { id, item_id, issue_id, category, issue_date, source_hosts, colleges, dates, content_status, manual_review } = row;
+      return { id, item_id, issue_id, category, issue_date, source_hosts, colleges, dates,
+        ...(content_status === undefined ? {} : { content_status }), ...(manual_review === undefined ? {} : { manual_review }) };
+    }) });
+  }
+
+  function addHistory(f: { manifest: Extract<Manifest, { schema_version: 3 }>; data: Map<string, unknown>; catalog: Catalog }) {
+    const path = `versions/${DATA_VERSION}/reader-v3/history-index.json`;
+    f.manifest.files.history_index = path;
+    const seen = new Set<string>();
+    const rows = f.catalog.occurrences.filter((row) => !seen.has(row.item_id) && Boolean(seen.add(row.item_id)));
+    const categories = new Set<string>(), colleges = new Set<string>(), sources = new Set<string>();
+    for (const row of f.catalog.occurrences) {
+      if (row.category) categories.add(row.category);
+      for (const college of row.colleges) colleges.add(college);
+      for (const source of sourceTypesForHosts(originalHosts(row))) sources.add(source);
+    }
+    f.data.set(`/data/${path}`, { aliases: Object.fromEntries(f.catalog.items.flatMap((item) => item.aliases.map((alias) => [alias, item.id]))),
+      occurrences: rows.map(({ id, item_id, issue_id }) => ({ id, item_id, issue_id })),
+      options: { categories: [...categories].sort(), colleges: [...colleges].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+        sources: ['官网', '微信公众号', '其他'].filter((source) => sources.has(source)) } });
+  }
+
+  it('selects before collapse and hydrates only the selected partition and its owner', async () => {
+    const f = fixture();
+    f.catalog.occurrences[0].category = '旧类';
+    f.catalog.occurrences[1].category = '新类';
+    addSelection(f);
+    const dataset = await loadDataset();
+    const selection = await dataset.loadSelection();
+    expect(dataset.canonicalItemId(f.alias)).toBe(ITEM_ID);
+    expect(f.requests.some((path) => path.includes('/facts/'))).toBe(false);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.item_index}`);
+    const options = { mode: 'favorites' as const, favorites: new Set([dataset.canonicalItemId(f.alias)]), followedColleges: new Set<string>(), searchHits: null };
+    const filters = { ...defaultFilters(), category: ['新类'] };
+    const expected = queryCatalog(f.catalog, filters, options);
+    const actual = queryCatalog(selection, filters, options);
+    expect(actual.records.map((row) => row.id)).toEqual(expected.records.map((row) => row.id));
+    expect((await dataset.hydrateSelection(actual.records)).map((row) => row.id)).toEqual([OCCURRENCE_ID]);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.partitions[f.oldIssue]}`);
+    const search = queryCatalog(selection, { ...defaultFilters(), q: '旧' }, { ...options, searchHits: [f.oldOccurrence] });
+    expect(search.records.map((row) => row.id)).toEqual([f.oldOccurrence]);
+    expect(queryCatalog(selection, { ...defaultFilters(), q: 'x' }, { ...options, searchHits: [] }).total).toBe(0);
+  });
+
+  it('does not request facts belonging only to another results page', async () => {
+    const f = fixture();
+    const current = f.encoded.partitions[ISSUE_ID];
+    const old = f.encoded.partitions[f.oldIssue];
+    const issues = f.data.get(`/data/${f.manifest.files.issues}`) as PublicIssue[];
+    const template = f.catalog.occurrences[1];
+    f.catalog.occurrences = [template, f.catalog.occurrences[0]];
+    for (let i = 0; i < 21; i++) {
+      const item = `item-${(100 + i).toString(16).padStart(24, '0')}`;
+      const id = `occ-${(100 + i).toString(16).padStart(24, '0')}`;
+      const part = i === 20 ? old : current;
+      const issue = i === 20 ? f.oldIssue : ISSUE_ID;
+      const document = i === 20 ? 'c'.repeat(64) : DOCUMENT_ID;
+      part.messages.push({ ...current.messages[0], id: item, aliases: [], latest_occurrence_id: id, occurrence_count: 1 });
+      part.owners[item] = issue;
+      part.occurrences.push({ ...current.occurrences[0], id, item_id: item, document_id: document, order: i + 2 });
+      f.catalog.occurrences.push({ ...template, id, item_id: item, issue_id: issue, document_id: document });
+      f.catalog.items.push({ id: item, aliases: [], latest_occurrence_id: id, occurrence_count: 1 });
+      issues.find((entry) => entry.id === issue)!.occurrence_count++;
+    }
+    f.manifest.counts.items += 21; f.manifest.counts.occurrences += 21;
+    addSelection(f); addHistory(f);
+    const dataset = await loadDataset();
+    const history = await dataset.loadHistory();
+    expect(history).not.toBeNull();
+    const options = { mode: 'all' as const, favorites: new Set<string>(), followedColleges: new Set<string>(), searchHits: null };
+    const expected = queryCatalog(f.catalog, defaultFilters(), options);
+    expect(history!.occurrences.map((row) => row.id)).toEqual(expected.matchingRecords.map((row) => row.id));
+    expect(dataset.canonicalItemId(f.alias)).toBe(ITEM_ID);
+    expect((await dataset.hydrateSelection(history!.occurrences.slice(0, 20))).map((row) => row.id)).toEqual(expected.records.map((row) => row.id));
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.selection_index}`);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.item_index}`);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.search_index}`);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.partitions[f.oldIssue]}`);
+    expect((await dataset.hydrateSelection(history!.occurrences.slice(20, 40))).map((row) => row.id)).toEqual(history!.occurrences.slice(20, 40).map((row) => row.id));
+    expect(f.requests).toContain(`/data/${f.manifest.files.partitions[f.oldIssue]}`);
+    const selection = await dataset.loadSelection();
+    expect(f.requests).toContain(`/data/${f.manifest.files.selection_index}`);
+    expect(queryCatalog(selection, { ...defaultFilters(), category: [template.category!] }, options).total).toBe(22);
+    expect(await dataset.loadHistory()).toBe(history);
+  });
+
+  it('retries a malformed or cancelled history index without loading the selection index', async () => {
+    const f = fixture(); addSelection(f); addHistory(f);
+    const path = `/data/${f.manifest.files.history_index}`;
+    const valid = f.data.get(path);
+    f.data.set(path, { aliases: {}, occurrences: [], options: {} });
+    const dataset = await loadDataset();
+    await expect(dataset.loadHistory()).rejects.toThrow();
+    f.data.set(path, valid);
+    const cancelled = new AbortController(); cancelled.abort();
+    await expect(dataset.loadHistory(cancelled.signal)).rejects.toThrow();
+    const index = await dataset.loadHistory();
+    expect(index?.occurrences.map((row) => row.id)).toEqual([f.oldOccurrence]);
+    expect(index?.options.categories).toEqual(['活动']);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.selection_index}`);
+    expect(f.requests).not.toContain(`/data/${f.manifest.files.item_index}`);
+  });
+
+  it('allows old manifests to fall back without a history index', async () => {
+    fixture();
+    const dataset = await loadDataset();
+    expect(await dataset.loadHistory()).toBeNull();
+    expect((await dataset.loadSelection()).occurrences).toHaveLength(2);
+  });
+
+  it('switches to filtered selection while an obsolete history request is cancelled', async () => {
+    const f = fixture(); addSelection(f); addHistory(f);
+    const dataset = await loadDataset();
+    const historyPath = `/data/${f.manifest.files.history_index}`;
+    const gate = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    let historyRequests = 0;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === historyPath && ++historyRequests === 1) { started.resolve(); return gate.promise; }
+      const value = f.data.get(path);
+      return new Response(JSON.stringify(value ?? null), { status: value === undefined ? 404 : 200 });
+    });
+    const controller = new AbortController();
+    const obsolete = expect(dataset.loadHistory(controller.signal)).rejects.toThrow();
+    await started.promise;
+    controller.abort();
+    const filtered = await dataset.loadSelection();
+    await obsolete;
+    const options = { mode: 'all' as const, favorites: new Set<string>(), followedColleges: new Set<string>(), searchHits: null };
+    expect(queryCatalog(filtered, { ...defaultFilters(), category: ['活动'] }, options).records.map((row) => row.id)).toEqual([f.oldOccurrence]);
+    gate.resolve(new Response(JSON.stringify(f.data.get(historyPath))));
+    const restored = await dataset.loadHistory();
+    expect(restored?.occurrences.map((row) => row.id)).toEqual([f.oldOccurrence]);
+    expect(historyRequests).toBe(2);
+  });
+
+  it('retries malformed selection and aborted hydration without poisoning caches', async () => {
+    const f = fixture(); addSelection(f);
+    const path = `/data/${f.manifest.files.selection_index}`;
+    const valid = f.data.get(path);
+    f.data.set(path, [{ id: 'bad' }]);
+    const dataset = await loadDataset();
+    await expect(dataset.loadSelection()).rejects.toThrow();
+    f.data.set(path, valid);
+    const selection = await dataset.loadSelection();
+    const controller = new AbortController(); controller.abort();
+    await expect(dataset.hydrateSelection(selection.occurrences, controller.signal)).rejects.toThrow();
+    expect((await dataset.hydrateSelection(selection.occurrences)).map((row) => row.id)).toEqual([f.oldOccurrence, OCCURRENCE_ID]);
+  });
+  it('keeps a shared selection request alive when another caller cancels', async () => {
+    const f = fixture(); addSelection(f);
+    const dataset = await loadDataset();
+    const path = `/data/${f.manifest.files.selection_index}`;
+    const gate = Promise.withResolvers<Response>();
+    let requests = 0;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const requested = new URL(String(input)).pathname;
+      if (requested === path) { requests++; return gate.promise; }
+      const value = f.data.get(requested);
+      return new Response(JSON.stringify(value ?? null), { status: value === undefined ? 404 : 200 });
+    });
+    const controller = new AbortController();
+    const cancelled = dataset.loadSelection(controller.signal);
+    const survivor = dataset.loadSelection();
+    controller.abort();
+    await expect(cancelled).rejects.toThrow();
+    gate.resolve(new Response(JSON.stringify(f.data.get(path))));
+    expect((await survivor).occurrences).toHaveLength(2);
+    expect(requests).toBe(1);
+  });
 
   it('loads metadata and only needed owner partitions, preserving global order', async () => {
     const { requests, manifest, oldIssue, oldOccurrence } = fixture();

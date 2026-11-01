@@ -1,4 +1,4 @@
-import type { Catalog, CatalogItem, Manifest, PublicDate, PublicIssue, PublicItemDetail, PublicOccurrence } from './types';
+import type { Catalog, CatalogItem, Manifest, PublicDate, PublicIssue, PublicItemDetail, PublicOccurrence, SelectionCatalog, SelectionOccurrence, HistoryIndex, HistoryOccurrence } from './types';
 import { manualPublicUrl } from './filter';
 import { manualReviewStampData, validDay, withinTextLimit } from './review-validation.mjs';
 import { decodePartition, decodeItemDetail } from './public-format.mjs';
@@ -233,6 +233,16 @@ function manifestData(value: unknown): Manifest {
     paths.push(value.files[name]);
   }
   if (value.schema_version === 3) {
+    if (value.files.selection_index !== undefined) {
+      requireData(typeof value.files.selection_index === 'string');
+      staticUrl(value.files.selection_index, value.data_version);
+      paths.push(value.files.selection_index);
+    }
+    if (value.files.history_index !== undefined) {
+      requireData(typeof value.files.history_index === 'string');
+      staticUrl(value.files.history_index, value.data_version);
+      paths.push(value.files.history_index);
+    }
     requireData(object(value.files.partitions));
     for (const [id, path] of Object.entries(value.files.partitions)) {
       requireData((id === 'standalone' || ISSUE_ID.test(id)) && typeof path === 'string');
@@ -397,6 +407,9 @@ export interface StaticDataset {
   assetUrl(path: string): string;
   canonicalItemId(id: string): string;
   loadCatalog(signal?: AbortSignal): Promise<Catalog>;
+  loadSelection(signal?: AbortSignal): Promise<SelectionCatalog>;
+  loadHistory(signal?: AbortSignal): Promise<HistoryIndex | null>;
+  hydrateSelection(rows: HistoryOccurrence[], signal?: AbortSignal): Promise<Catalog['occurrences']>;
   loadIssue(issueId: string, signal?: AbortSignal): Promise<Catalog>;
   loadItem(id: string, signal?: AbortSignal): Promise<PublicItemDetail>;
 }
@@ -446,6 +459,13 @@ export async function loadDataset(signal?: AbortSignal): Promise<StaticDataset> 
     return detail;
   }
   return {
+    async loadHistory() { return null; },
+    async loadSelection(signal) { return loadCatalog(signal); },
+    async hydrateSelection(rows, signal) {
+      const full = await loadCatalog(signal);
+      const byId = new Map(full.occurrences.map((row) => [row.id, row]));
+      return rows.map((row) => { const value = byId.get(row.id); requireData(value); return value; });
+    },
     manifest, issues, loadCatalog,
     searchIndexUrl: staticUrl(manifest.files.search_index, manifest.data_version),
     assetUrl: (path) => staticUrl(path, manifest.data_version),
@@ -501,8 +521,11 @@ function loadPartitionedDataset(manifest: Extract<Manifest, { schema_version: 3 
   requireData(Object.keys(paths).length === issues.length + (Object.hasOwn(paths, 'standalone') ? 1 : 0)
     && issues.every((issue) => Object.hasOwn(paths, issue.id)));
   const known = new Map<string, CatalogItem>();
+  const selectionAliases = new Map<string, string>();
   let directory: WireItem[] | undefined;
   let catalog: Catalog | undefined;
+  let selection: SelectionCatalog | undefined;
+  let history: HistoryIndex | undefined;
   const recentItems = new Map<string, CatalogItem[]>();
   const cache = new Map<string, unknown>();
   const pending = new Map<string, { promise: Promise<unknown>; controller: AbortController; users: number }>();
@@ -647,7 +670,7 @@ function loadPartitionedDataset(manifest: Extract<Manifest, { schema_version: 3 
         requireData(typeof entry.owner === 'string' && Object.hasOwn(paths, entry.owner)
           && Array.isArray(entry.occurrences) && entry.occurrences.length === item.occurrence_count);
         if (entry.detail_path) requireData(!Object.values(paths).includes(entry.detail_path)
-          && ![manifest.files.issues, manifest.files.item_index, manifest.files.search_index].includes(entry.detail_path));
+          && ![manifest.files.issues, manifest.files.item_index, manifest.files.search_index, manifest.files.selection_index, manifest.files.history_index].includes(entry.detail_path));
         let latest = false;
         for (const ref of entry.occurrences) {
           requireData(object(ref) && typeof ref.id === 'string' && OCC_ID.test(ref.id) && !allOccurrences.has(ref.id)
@@ -665,11 +688,118 @@ function loadPartitionedDataset(manifest: Extract<Manifest, { schema_version: 3 
       return directory;
     } catch (error) { cache.delete(manifest.files.item_index); throw error; }
   }
-  return {
+  async function loadSelection(signal?: AbortSignal): Promise<SelectionCatalog> {
+    if (!manifest.files.selection_index) return dataset.loadCatalog(signal);
+    if (selection) { signal?.throwIfAborted(); return selection; }
+    const path = manifest.files.selection_index;
+    const raw = await get(path, signal);
+    try {
+      requireData(object(raw) && exactKeys(raw, ['aliases', 'occurrences']) && object(raw.aliases)
+        && Array.isArray(raw.occurrences) && raw.occurrences.length === manifest.counts.occurrences);
+      const seen = new Set<string>();
+      const items = new Set<string>();
+      for (const row of raw.occurrences) {
+        requireData(object(row) && exactKeys(row, ['id', 'item_id', 'issue_id', 'category', 'issue_date', 'source_hosts', 'colleges', 'dates', ...(Object.hasOwn(row, 'content_status') ? ['content_status'] : []), ...(Object.hasOwn(row, 'manual_review') ? ['manual_review'] : [])]));
+        requireData(typeof row.id === 'string' && OCC_ID.test(row.id) && !seen.has(row.id) && typeof row.item_id === 'string' && ITEM_ID.test(row.item_id)
+          && (row.issue_id === null ? Object.hasOwn(paths, 'standalone') : typeof row.issue_id === 'string' && Object.hasOwn(paths, row.issue_id))
+          && nullableString(row.category) && nullableString(row.issue_date) && stringArray(row.source_hosts) && stringArray(row.colleges)
+          && (row.content_status === undefined || ['verified', 'human_verified', 'conflict', 'unconfirmed', 'unreviewed', 'legacy', 'source_corrected', 'needs_review'].includes(String(row.content_status)))
+          && (row.manual_review === undefined || manualReviewStampData(row.manual_review, false))
+          && Array.isArray(row.dates) && row.dates.every((date) => object(date)
+            && exactKeys(date, ['kind', 'normalized_date', 'resolution', ...(Object.hasOwn(date, 'literal_source') ? ['literal_source'] : [])])
+            && typeof date.kind === 'string' && nullableString(date.normalized_date)
+            && ['explicit', 'contextual', 'year_unknown', 'invalid', 'ambiguous'].includes(String(date.resolution))
+            && (date.literal_source === undefined || ['primary', 'bulletin', 'manual'].includes(String(date.literal_source)))));
+        seen.add(row.id);
+        items.add(row.item_id);
+      }
+      requireData(items.size === manifest.counts.items);
+      const aliases = new Map<string, string>();
+      for (const [alias, id] of Object.entries(raw.aliases)) {
+        requireData(ITEM_ID.test(alias) && !items.has(alias) && typeof id === 'string' && items.has(id));
+        aliases.set(alias, id);
+      }
+      signal?.throwIfAborted();
+      for (const [alias, id] of aliases) selectionAliases.set(alias, id);
+      selection = { occurrences: raw.occurrences as SelectionOccurrence[] };
+      return selection;
+    } catch (error) { cache.delete(path); throw error; }
+  }
+  async function loadHistory(signal?: AbortSignal): Promise<HistoryIndex | null> {
+    if (!manifest.files.history_index) return null;
+    if (history) { signal?.throwIfAborted(); return history; }
+    const path = manifest.files.history_index;
+    const raw = await get(path, signal);
+    try {
+      requireData(object(raw) && exactKeys(raw, ['aliases', 'occurrences', 'options']) && object(raw.aliases)
+        && Array.isArray(raw.occurrences) && raw.occurrences.length === manifest.counts.items
+        && object(raw.options) && exactKeys(raw.options, ['categories', 'colleges', 'sources'])
+        && stringArray(raw.options.categories) && stringArray(raw.options.colleges) && stringArray(raw.options.sources)
+        && raw.options.sources.every((source) => ['官网', '微信公众号', '其他'].includes(source)));
+      const items = new Set<string>(), occurrences = new Set<string>();
+      for (const row of raw.occurrences) {
+        requireData(object(row) && exactKeys(row, ['id', 'item_id', 'issue_id'])
+          && typeof row.id === 'string' && OCC_ID.test(row.id) && !occurrences.has(row.id)
+          && typeof row.item_id === 'string' && ITEM_ID.test(row.item_id) && !items.has(row.item_id)
+          && (row.issue_id === null ? Object.hasOwn(paths, 'standalone') : typeof row.issue_id === 'string' && Object.hasOwn(paths, row.issue_id)));
+        occurrences.add(row.id); items.add(row.item_id);
+      }
+      const aliases = new Map<string, string>();
+      for (const [alias, id] of Object.entries(raw.aliases)) {
+        requireData(ITEM_ID.test(alias) && !items.has(alias) && typeof id === 'string' && items.has(id)
+          && (!selectionAliases.has(alias) || selectionAliases.get(alias) === id));
+        aliases.set(alias, id);
+      }
+      signal?.throwIfAborted();
+      for (const [alias, id] of aliases) selectionAliases.set(alias, id);
+      history = { occurrences: raw.occurrences as HistoryOccurrence[], options: raw.options as unknown as HistoryIndex['options'] };
+      return history;
+    } catch (error) { cache.delete(path); throw error; }
+  }
+  const dataset: StaticDataset = {
     manifest, issues,
     searchIndexUrl: staticUrl(manifest.files.search_index, manifest.data_version),
     assetUrl: (path) => staticUrl(path, manifest.data_version),
-    canonicalItemId: (id) => known.get(id)?.id ?? id,
+    canonicalItemId: (id) => known.get(id)?.id ?? selectionAliases.get(id) ?? id,
+    loadSelection,
+    loadHistory,
+    async hydrateSelection(rows, signal) {
+      if (!manifest.files.selection_index && !manifest.files.history_index) {
+        const full = await dataset.loadCatalog(signal);
+        const byId = new Map(full.occurrences.map((row) => [row.id, row]));
+        return rows.map((row) => { const value = byId.get(row.id); requireData(value); return value; });
+      }
+      const grouped = new Map<string, HistoryOccurrence[]>();
+      for (const row of rows) {
+        const key = row.issue_id ?? 'standalone';
+        const group = grouped.get(key) ?? [];
+        group.push(row); grouped.set(key, group);
+      }
+      const found = new Map<string, Catalog['occurrences'][number]>();
+      await Promise.all([...grouped].map(async ([key, selected]) => {
+        const part = await partition(key, signal);
+        const wanted = new Map(selected.map((row) => [row.id, row.item_id]));
+        const records = part.occurrences.filter((row) => wanted.get(row.id) === row.item_id);
+        requireData(records.length === selected.length);
+        const ownerKeys = [...new Set(records.map((row) => part.owners[row.item_id]))];
+        try {
+          const ownerParts = await Promise.all(ownerKeys.map((owner) => owner === key ? Promise.resolve(part) : partition(owner, signal)));
+          const owners = new Map<string, WireMessage>();
+          for (let i = 0; i < ownerParts.length; i++) for (const message of ownerParts[i].messages) {
+            if (part.owners[message.id] === ownerKeys[i] && records.some((row) => row.item_id === message.id)) owners.set(message.id, message);
+          }
+          const selectedOwners = Object.fromEntries(records.map((row) => [row.item_id, part.owners[row.item_id]]));
+          const subset: WirePartition = { messages: part.messages.filter((message) => selectedOwners[message.id] === key), owners: selectedOwners, occurrences: records };
+          for (const row of hydrate(subset, key, owners)) found.set(row.id, row);
+        } catch (error) {
+          cache.delete(paths[key]);
+          for (const owner of ownerKeys) cache.delete(paths[owner]);
+          throw error;
+        }
+      }));
+      signal?.throwIfAborted();
+      return rows.map((row) => { const value = found.get(row.id); requireData(value && value.item_id === row.item_id); return value; });
+    },
     async loadIssue(id, signal) {
       requireData(issues.some((issue) => issue.id === id), '未找到这期刊物，可能不在当前数据版本中。');
       const decoded = await decode(id, signal);
@@ -778,4 +908,5 @@ function loadPartitionedDataset(manifest: Extract<Manifest, { schema_version: 3 
       return detail;
     },
   };
+  return dataset;
 }

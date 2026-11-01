@@ -7,6 +7,7 @@ import { EditionPage } from '../src/components/EditionPage';
 import { IssueArchive } from '../src/components/IssueArchive';
 import { ItemDetail } from '../src/components/ItemDetail';
 import { encodePartitionedFacts, decodePartition, decodeItemDetail } from '../src/public-format.mjs';
+import { originalSourceUrl } from '../src/source-links.mjs';
 
 const ITEM_ID = `item-${'1'.repeat(24)}`;
 const OCC_ID = `occ-${'2'.repeat(24)}`;
@@ -105,6 +106,119 @@ function archive(row: PublicOccurrence, documents: PublicDocument[] = [], factsO
 }
 function header(html: string) { return html.match(/<header\b[^>]*>([\s\S]*?)<\/header>/)?.[1] ?? ''; }
 
+
+describe('activity source links and newsletter provenance', () => {
+  const archiveUrl = 'https://nik-nul.github.io/news/2026-10-13';
+  const edition = (row: PublicOccurrence) => renderToStaticMarkup(<MemoryRouter><EditionPage state={state(row)} /></MemoryRouter>);
+
+  it.each([
+    'https://NIK-NUL.GITHUB.IO./news/2026-10-13',
+    'https://zhongyangchuwu.github.io/NannaNews/#/history',
+    'https://zhongyangchuwu.github.io/%4EannaNews%2fitem',
+    'https://ZHONGYANGCHUWU.GITHUB.IO./nannanews/item',
+  ])('rejects archive URL %s', (url) => {
+    expect(originalSourceUrl(url)).toBeNull();
+  });
+
+  it.each([
+    'https://other.github.io/NannaNews/item',
+    'https://zhongyangchuwu.github.io/NannaNews-other/item',
+    'https://nik-nul.github.io.evil.example/news',
+    'https://example.edu/news/nik-nul.github.io',
+  ])('retains unrelated URL %s', (url) => {
+    expect(originalSourceUrl(url)).toBe(url);
+  });
+
+  it('shows real links instead of archive links in edition cards and compact details', () => {
+    const row = occurrence({ source_urls: [archiveUrl, SOURCE_URL, 'https://other.github.io/event'] });
+    const card = edition(row);
+    const compact = detail(row, [], true);
+    expect(card).toContain(`href="${SOURCE_URL}"`);
+    expect(card).toContain('另 1 个来源');
+    expect(compact).toContain(`href="${SOURCE_URL}"`);
+    expect(compact).toContain('href="https://other.github.io/event"');
+    expect(card + compact).not.toContain(`href="${archiveUrl}"`);
+  });
+
+  it('shows a clear absent-source state rather than an archive or PDF as the source action', () => {
+    const row = occurrence({ source_urls: [archiveUrl], date_review: null, content_status: 'unreviewed' });
+    expect(edition(row)).toContain('原始来源链接未提供');
+    const html = detail(row, [documentFixture('pdf')], true);
+    expect(header(html)).toContain('原始来源链接未提供');
+    expect(html).not.toContain(`href="${archiveUrl}"`);
+  });
+
+  it('blocks archive corrections, returned pages and citations without hiding real evidence', () => {
+    const row = occurrence({ source_urls: [archiveUrl, SOURCE_URL], source_corrections: [
+      { original_url: 'https://example.edu/old', corrected_url: archiveUrl, reason: 'Correction', title: 'Archive', sha256: 'd'.repeat(64), fetched_at: '2026-10-25T00:00:00Z' },
+    ] });
+    row.date_review!.source_review.sources[0].resolved_url = archiveUrl;
+    row.date_review!.source_review.activity!.title.evidence[0].url = archiveUrl;
+    const html = detail(row);
+    expect(html).not.toContain(`href="${archiveUrl}"`);
+    expect(header(html)).not.toContain('AI activity title');
+    expect(html).toContain('Review reason');
+  });
+
+  it('keeps verified content when its actual citations come from a genuine source', () => {
+    const row = occurrence({ source_urls: [archiveUrl] });
+    row.date_review!.source_review.sources.push({ ...row.date_review!.source_review.sources[0], url: archiveUrl, resolved_url: archiveUrl });
+    const html = detail(row);
+    expect(header(html)).toContain('AI activity title');
+    expect(html).toContain(`href="${SOURCE_URL}"`);
+    expect(html).not.toContain(`href="${archiveUrl}"`);
+  });
+
+  it.each([false, true])('skips participation links known to redirect to the archive, including manual: %s', (manual) => {
+    const row = manual ? humanOccurrence() : occurrence();
+    const redirect = 'https://example.edu/redirect';
+    const review = row.date_review!.source_review;
+    review.sources.push({ ...review.sources[0], url: redirect, resolved_url: archiveUrl });
+    const text = `${redirect} 或 ${PARTICIPATION_URL}`;
+    if (manual && hasFullManualActivity(row)) row.manual_review.activity.participation = text;
+    else review.activity!.participation = { value: text, evidence: [{ url: SOURCE_URL, text, image_index: null }] };
+    const html = detail(row);
+    expect(header(html)).toContain(`href="${PARTICIPATION_URL}"`);
+    expect(html).not.toContain(`href="${redirect}"`);
+  });
+
+  it('promotes only date text actually quoted by an eligible original source', () => {
+    const row = occurrence();
+    const review = row.date_review!.source_review;
+    review.sources[0].quotes = ['活动于11月2日举行'];
+    review.sources.push({ ...review.sources[0], url: 'https://example.edu/redirect', resolved_url: archiveUrl, quotes: ['截止10月1日'] });
+    row.date_review!.claims = [
+      { kind: 'event', normalized_date: '2026-11-02', resolution: 'explicit', literal_source: 'primary', raw_text: '11月2日', evidence: 'genuine evidence' },
+      { kind: 'deadline', normalized_date: '2026-10-01', resolution: 'explicit', literal_source: 'primary', raw_text: '10月1日', evidence: 'archive evidence' },
+    ];
+    const html = detail(row);
+    expect(header(html)).toContain('2026-11-02');
+    expect(header(html)).not.toContain('2026-10-01');
+    expect(header(html)).not.toContain('部分已列明的截止日期已过');
+    expect(html).toContain('archive evidence');
+    expect(html).toContain('历史原文标记（待核对）');
+    expect(header(detail(row, [], true))).toContain('已对照原文');
+  });
+
+  it('uses an eligible captured review URL as a legacy source link without claiming current verification', () => {
+    const row = occurrence({ source_urls: [archiveUrl], content_status: 'legacy' });
+    row.date_review!.rules_version = 'old';
+    const html = detail(row);
+    expect(header(html)).toContain(`href="${SOURCE_URL}"`);
+    expect(header(html)).not.toContain('已对照原文');
+    expect(html).not.toContain(`href="${archiveUrl}"`);
+  });
+
+  it('keeps manual verification but does not link archive sources or participation', () => {
+    const row = humanOccurrence();
+    row.manual_review.activity.source_urls = [archiveUrl, SOURCE_URL];
+    row.manual_review.activity.participation = archiveUrl;
+    const html = detail(row);
+    expect(html).toContain('人工核实');
+    expect(html).toContain(`href="${SOURCE_URL}"`);
+    expect(html).not.toContain(`href="${archiveUrl}"`);
+  });
+});
 
 describe('human detail projection and unchanged AI guards', () => {
   it('uses manual content and safe operator participation links, separating AI and raw reference', () => {

@@ -465,6 +465,20 @@ def test_v3_manifest_rejects_unsafe_paths(damage):
         static_export._manifest_paths(files, version, 3)
 
 
+@pytest.mark.parametrize(('name', 'filename'), [('selection_index', 'selection-index.json'), ('history_index', 'history-index.json')])
+def test_v3_manifest_allows_only_its_versioned_query_indices(name, filename):
+    version = '1' * 64
+    prefix = 'versions/' + version + '/reader-v3/'
+    files = {'issues': prefix + 'issues.json', 'item_index': prefix + 'item-index.json',
+             'search_index': prefix + 'search-index.json', 'partitions': {}}
+    assert len(static_export._manifest_paths(files, version, 3)) == 3
+    files[name] = prefix + filename
+    assert files[name] in static_export._manifest_paths(files, version, 3)
+    files[name] = prefix + '../' + filename
+    with pytest.raises(ValueError):
+        static_export._manifest_paths(files, version, 3)
+
+
 def test_manifest_commit_failure_leaves_old_dataset_intact(evidence, tmp_path, monkeypatch):
     output = tmp_path / 'public'
     static_export.export_static(output, settings=evidence)

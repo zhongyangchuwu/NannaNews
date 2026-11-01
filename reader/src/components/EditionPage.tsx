@@ -5,17 +5,10 @@ import { Button } from './button';
 import { ContentBadge, OccurrenceFacts, OccurrenceReminder } from './OccurrenceList';
 import { ShareButton } from './ShareButton';
 import { issueSharePath } from '../sharing';
+import { sourceUrls } from '../source-links.mjs';
 
 const CATEGORY_ORDER = ['校园动态', '讲座', '院级活动', '社团活动', '招聘升学宣讲'];
 
-function safeHttpUrl(raw: string): URL | null {
-  try {
-    const url = new URL(raw);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
-}
 
 function groupRecords(records: CatalogOccurrence[]) {
   const groups = new Map<string, CatalogOccurrence[]>();
@@ -68,11 +61,9 @@ function StoryCard({ record, state }: { record: CatalogOccurrence; state: Reader
   const favorite = state.favorites.has(record.item_id);
   const corrections = record.source_corrections ?? [];
   const replacedUrls = new Set(corrections.map((correction) => correction.original_url));
-  const sourceUrls = [...record.source_urls, ...corrections.map((correction) => correction.corrected_url)]
+  const sourceUrlsRaw = [...record.source_urls, ...corrections.map((correction) => correction.corrected_url)]
     .filter((raw) => !replacedUrls.has(raw));
-  const sourceLinks = [...new Set(sourceUrls)]
-    .map((raw) => ({ raw, url: safeHttpUrl(raw) }))
-    .filter((source): source is { raw: string; url: URL } => source.url !== null);
+  const sourceLinks = sourceUrls(sourceUrlsRaw);
 
   return <article className="edition-story" data-item-id={record.item_id} data-occurrence-id={record.id}>
     <div className="edition-story-heading">
@@ -83,7 +74,7 @@ function StoryCard({ record, state }: { record: CatalogOccurrence; state: Reader
     <div className="edition-story-meta">
       <ContentBadge status={record.content_status} />
       <OccurrenceReminder occurrence={record} today={state.today} href={itemHref} />
-      {sourceLinks[0] && <a className="edition-source-link" href={sourceLinks[0].url.href} target="_blank" rel="noopener noreferrer">查看来源<ExternalLink size={13} aria-hidden="true" /><span className="visually-hidden">（新窗口打开）</span></a>}
+      {sourceLinks[0] ? <a className="edition-source-link" href={sourceLinks[0]} target="_blank" rel="noopener noreferrer">查看来源<ExternalLink size={13} aria-hidden="true" /><span className="visually-hidden">（新窗口打开）</span></a> : <span className="edition-source-link">原始来源链接未提供</span>}
       {sourceLinks.length > 1 && <Link className="edition-source-link" to={itemHref}>另 {sourceLinks.length - 1} 个来源</Link>}
     </div>
     <div className="edition-story-actions">

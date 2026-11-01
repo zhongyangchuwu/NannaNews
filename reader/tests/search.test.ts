@@ -45,7 +45,7 @@ const rows = [
   occurrence('body-hit', 'body', { title: '报告' }),
   occurrence('wildcard', 'wildcard'),
   occurrence('old', 'history', { title: '往期通知', issue_id: 'issue-old', document_id: 'document-old', issue_date: '2025-05-01',
-    category: '招聘', colleges: ['物理学院'], source_hosts: ['old.example.edu'] }),
+    category: '招聘', colleges: ['物理学院'], source_hosts: ['old.example.edu'], source_urls: ['https://old.example.edu/news'] }),
   occurrence(standaloneOccurrence, standaloneItem, { kind: 'standalone', activity_id: standaloneItem, source_id: standaloneSource,
     issue_id: null, document_id: null, issue_date: null, title: '独立收录活动', preview: 'StandaloneSearchTerm 已审阅摘要',
     content_status: 'human_verified', manual_review: { revision: 'c'.repeat(64), status: 'verified',
@@ -212,6 +212,26 @@ describe('occurrence-first catalogue selection', () => {
     expect(queryCatalog(data, { ...defaultFilters(), page: 99 }, options()).records.map((row) => row.id)).toEqual(['occ-20']);
     expect(queryCatalog(catalog([]), defaultFilters(), options())).toMatchObject({ records: [], total: 0, page: 1, pages: 1 });
   });
+
+  it('gives the same pages and totals from bare selection metadata', () => {
+    const occurrences = Array.from({ length: 25 }, (_, i) => occurrence(`occ-${i}`, `item-${i}`, {
+      category: i % 2 ? '招聘' : '活动', colleges: [i % 2 ? '甲学院' : '乙学院'],
+      dates: [{ kind: 'event', normalized_date: `2026-11-${String(i + 1).padStart(2, '0')}`, resolution: 'explicit' }],
+    }));
+    occurrences.unshift(occurrence('earlier-copy', 'item-24', { category: '其他', dates: [] }));
+    const full = catalog(occurrences);
+    const selection = { occurrences: occurrences.map(({ id, item_id, issue_id, category, issue_date, source_hosts, colleges, dates, content_status, manual_review }) =>
+      ({ id, item_id, issue_id, category, issue_date, source_hosts, colleges, dates, content_status, manual_review })) };
+    for (const filters of [defaultFilters(), { ...defaultFilters(), page: 2 },
+      { ...defaultFilters(), category: ['活动'], date_status: 'known' as const, date_from: '2026-11-10' },
+      { ...defaultFilters(), q: 'hit' }]) {
+      const opts = options({ searchHits: ['occ-24'] });
+      const expected = queryCatalog(full, filters, opts);
+      const actual = queryCatalog(selection, filters, opts);
+      expect([actual.total, actual.page, actual.pages, actual.records.map((row) => row.id)])
+        .toEqual([expected.total, expected.page, expected.pages, expected.records.map((row) => row.id)]);
+    }
+  });
 });
 
 describe('source type filtering', () => {
@@ -251,7 +271,7 @@ describe('source type filtering', () => {
 
     expect(selected(['官网']).map((row) => row.id)).toEqual(['official-later', 'official-only', 'multi-source']);
     expect(selected(['微信公众号']).map((row) => row.id)).toEqual(['wechat-only', 'multi-source']);
-    expect(selected(['其他']).map((row) => row.id)).toEqual(['other-first', 'no-source']);
+    expect(selected(['其他']).map((row) => row.id)).toEqual([]);
     expect(selected(['官网', '微信公众号']).map((row) => row.id)).toEqual([
       'official-later', 'official-only', 'wechat-only', 'multi-source',
     ]);
@@ -260,6 +280,17 @@ describe('source type filtering', () => {
       source_urls: ['https://mp.weixin.qq.com/s/example', 'https://math.nju.edu.cn/news'],
     });
   });
+});
+
+it('classifies the displayed corrected URL rather than the archived original', () => {
+  const archived = 'https://nik-nul.github.io/news/2026-10-13';
+  const corrected = 'https://mp.weixin.qq.com/s/example';
+  const data = catalog([occurrence('corrected', 'item-corrected', {
+    source_urls: [archived], source_hosts: ['nik-nul.github.io'],
+    source_corrections: [{ original_url: archived, corrected_url: corrected, reason: '更正', title: '活动', sha256: 'a'.repeat(64), fetched_at: '2026-10-14T00:00:00Z' }],
+  })]);
+  expect(queryCatalog(data, { ...defaultFilters(), source: ['微信公众号'] }, options()).total).toBe(1);
+  expect(queryCatalog(data, { ...defaultFilters(), source: ['其他'] }, options()).total).toBe(0);
 });
 
 describe('source-grounded archive dates', () => {

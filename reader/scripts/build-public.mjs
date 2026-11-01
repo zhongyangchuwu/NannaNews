@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import MiniSearch from 'minisearch';
 import { searchOptions } from '../src/tokenize.mjs';
 import { encodePartitionedFacts } from '../src/public-format.mjs';
+import { sourceUrls } from '../src/source-links.mjs';
+import { SOURCE_TYPES, sourceTypesForHosts } from '../src/source-types.mjs';
 
 const defaultSource = fileURLToPath(new URL('../public/data/', import.meta.url));
 const defaultOutput = fileURLToPath(new URL('../.reader-site/data/', import.meta.url));
@@ -52,6 +54,14 @@ async function ownedOutput(root) {
   const expected = new Set(['manifest.json']);
   const add = (v) => { safePath(v, version); if (expected.has(v)) fail('duplicate owned path'); expected.add(v); };
   add(manifest.files.issues); add(manifest.files.item_index); add(manifest.files.search_index);
+  if (manifest.files.selection_index !== undefined) {
+    if (manifest.files.selection_index !== `${prefix}/selection-index.json`) fail('invalid owned selection index layout');
+    add(manifest.files.selection_index);
+  }
+  if (manifest.files.history_index !== undefined) {
+    if (manifest.files.history_index !== `${prefix}/history-index.json`) fail('invalid owned history index layout');
+    add(manifest.files.history_index);
+  }
   for (const value of Object.values(manifest.files.partitions)) add(value);
   const entries = await json(root, manifest.files.item_index, version);
   if (!Array.isArray(entries)) fail('invalid owned item index');
@@ -117,6 +127,31 @@ export async function buildPublic(sourceDir = defaultSource, outputDir = default
     }
   }
   const encoded = encodePartitionedFacts(catalog, issues, details, manifest);
+  const selection = { aliases: Object.fromEntries(catalog.items.flatMap((item) => item.aliases.map((alias) => [alias, item.id]))),
+    occurrences: catalog.occurrences.map((row) => {
+      const corrections = row.source_corrections ?? [];
+      const replaced = new Set(corrections.map((correction) => correction.original_url));
+      const urls = [...row.source_urls, ...corrections.map((correction) => correction.corrected_url)].filter((url) => !replaced.has(url));
+      const hosts = [...new Set(sourceUrls(urls).map((url) => new URL(url).hostname.toLowerCase().replace(/\.$/, '')))];
+      const result = { id: row.id, item_id: row.item_id, issue_id: row.issue_id, category: row.category,
+        issue_date: row.issue_date, source_hosts: hosts, colleges: row.colleges, dates: row.dates };
+      if (row.content_status !== undefined) result.content_status = row.content_status;
+      if (row.manual_review !== undefined) result.manual_review = row.manual_review;
+      return result;
+    }) };
+  const seenItems = new Set(), categories = new Set(), colleges = new Set(), sources = new Set();
+  const history = { aliases: selection.aliases, occurrences: [], options: null };
+  for (const row of selection.occurrences) {
+    if (!seenItems.has(row.item_id)) {
+      seenItems.add(row.item_id);
+      history.occurrences.push({ id: row.id, item_id: row.item_id, issue_id: row.issue_id });
+    }
+    if (row.category) categories.add(row.category);
+    for (const college of row.colleges) colleges.add(college);
+    for (const source of sourceTypesForHosts(row.source_hosts)) sources.add(source);
+  }
+  history.options = { categories: [...categories].sort(), colleges: [...colleges].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    sources: SOURCE_TYPES.filter((source) => sources.has(source)) };
   const ids = new Set(catalog.occurrences.map((row) => row.id));
   if (ids.size !== catalog.occurrences.length || documents.some((doc) => !object(doc) || typeof doc.id !== 'string' || !ids.delete(doc.id) || typeof doc.title !== 'string' || typeof doc.text !== 'string') || ids.size) fail('search document identities');
   const built = new MiniSearch(searchOptions); built.addAll(documents);
@@ -141,8 +176,10 @@ export async function buildPublic(sourceDir = defaultSource, outputDir = default
       const dest = path.join(stage, relative); await mkdir(path.dirname(dest), {recursive:true});
       const buffer = Buffer.from(data); await writeFile(dest, buffer, {flag:'wx'}); bytes += buffer.length; files++;
     }
-    const wireFiles = {issues:`${prefix}/issues.json`,item_index:`${prefix}/item-index.json`,partitions:Object.create(null),search_index:`${prefix}/search-index.json`};
+    const wireFiles = {issues:`${prefix}/issues.json`,item_index:`${prefix}/item-index.json`,selection_index:`${prefix}/selection-index.json`,history_index:`${prefix}/history-index.json`,partitions:Object.create(null),search_index:`${prefix}/search-index.json`};
     await put(wireFiles.issues, JSON.stringify(issues)); await put(wireFiles.item_index, JSON.stringify(encoded.itemIndex)); await put(wireFiles.search_index, indexText);
+    await put(wireFiles.selection_index, JSON.stringify(selection));
+    await put(wireFiles.history_index, JSON.stringify(history));
     for (const [key, partition] of Object.entries(encoded.partitions)) { const relative = `${prefix}/facts/${key}.json`; wireFiles.partitions[key] = relative; await put(relative, JSON.stringify(partition)); }
     for (const [bucket, shard] of Object.entries(encoded.detailShards)) await put(`${prefix}/details/${bucket}.json`, JSON.stringify(shard));
     for (const [relative, info] of assets) {
