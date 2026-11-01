@@ -1,38 +1,19 @@
-import type { Catalog, CatalogDate, CatalogOccurrence, Filters, QueryOptions, QueryResult } from './types';
+import type { CatalogDate, SelectionCatalog, SelectionOccurrence, Filters, QueryOptions, QueryResult } from './types';
 import { manualReviewStampData, validDay } from './review-validation.mjs';
+import { sourceUrls } from './source-links.mjs';
 
-export const SOURCE_TYPES = ['官网', '微信公众号', '其他'] as const;
-export type SourceType = (typeof SOURCE_TYPES)[number];
-const INSTITUTIONAL_DOMAINS = ['nju.edu.cn', 'pku.edu.cn', 'neea.edu.cn', 'csc.edu.cn'];
+export { SOURCE_TYPES, sourceTypeForHost, sourceTypesForHosts } from './source-types.mjs';
+export type { SourceType } from './source-types.mjs';
+import { sourceTypesForHosts } from './source-types.mjs';
 
-function isDomainOrSubdomain(host: string, domain: string): boolean {
-  return host === domain || host.endsWith(`.${domain}`);
+export function originalHosts(occurrence: SelectionOccurrence): string[] {
+  if (!('source_urls' in occurrence) || !Array.isArray(occurrence.source_urls)) return occurrence.source_hosts;
+  const corrections = 'source_corrections' in occurrence && Array.isArray(occurrence.source_corrections) ? occurrence.source_corrections : [];
+  const replaced = new Set(corrections.map((correction) => correction.original_url));
+  const urls = [...occurrence.source_urls, ...corrections.map((correction) => correction.corrected_url)].filter((url) => !replaced.has(url));
+  return [...new Set(sourceUrls(urls).map((url: string) => new URL(url).hostname.toLowerCase().replace(/\.$/, '')))];
 }
 
-export function sourceTypeForHost(host: string): SourceType {
-  const hostname = host.toLowerCase().replace(/\.$/, '');
-  if (isDomainOrSubdomain(hostname, 'mp.weixin.qq.com')) return '微信公众号';
-  // Recognized institutional roots; unknown sites retain their original links under 其他.
-  if (INSTITUTIONAL_DOMAINS.some((domain) => isDomainOrSubdomain(hostname, domain))
-    || isDomainOrSubdomain(hostname, 'edu') || isDomainOrSubdomain(hostname, 'gov.cn')) return '官网';
-  return '其他';
-}
-
-export function sourceTypesForHosts(hosts: readonly string[]): SourceType[] {
-  let official = false;
-  let wechat = false;
-  for (const host of hosts) {
-    const type = sourceTypeForHost(host);
-    if (type === '官网') official = true;
-    if (type === '微信公众号') wechat = true;
-  }
-  // Archive and registration links do not make a known source also count as 其他.
-  const types: SourceType[] = [];
-  if (official) types.push('官网');
-  if (wechat) types.push('微信公众号');
-  if (types.length === 0) types.push('其他');
-  return types;
-}
 
 export class FilterError extends Error {
   readonly code = 'INVALID_FILTER';
@@ -45,13 +26,13 @@ export function defaultFilters(): Filters {
 }
 
 
-export function hasVerifiedManualReview(occurrence: CatalogOccurrence): boolean {
+export function hasVerifiedManualReview(occurrence: SelectionOccurrence): boolean {
   const review = occurrence.manual_review;
   return occurrence.content_status === 'human_verified' && manualReviewStampData(review,
     Boolean(review && Object.hasOwn(review, 'activity'))) && review.status === 'verified';
 }
 
-export function confirmedActivityDate(occurrence: CatalogOccurrence, date: CatalogDate): boolean {
+export function confirmedActivityDate(occurrence: SelectionOccurrence, date: CatalogDate): boolean {
   if (!['event', 'deadline', 'registration', 'application'].includes(date.kind)
     || !date.normalized_date || !validDay(date.normalized_date)) return false;
   if (occurrence.content_status === 'verified' && !occurrence.manual_review) {
@@ -140,7 +121,7 @@ export function serializeFilters(filters: Filters): URLSearchParams {
   return params;
 }
 
-function resolvedDates(occurrence: CatalogOccurrence, kind: string): string[] {
+function resolvedDates(occurrence: SelectionOccurrence, kind: string): string[] {
   return occurrence.dates.filter((date) => date.kind === kind && (date.resolution === 'explicit' || date.resolution === 'contextual')
     && date.normalized_date !== null && validDay(date.normalized_date)
     && (!occurrence.manual_review && occurrence.content_status !== 'human_verified' && date.literal_source !== 'manual'
@@ -152,7 +133,7 @@ export function beijingToday(now = new Date()): string {
   return new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-export function currentActivityDate(occurrence: CatalogOccurrence, asOf: string): CatalogDate | null {
+export function currentActivityDate(occurrence: SelectionOccurrence, asOf: string): CatalogDate | null {
   if (!validDay(asOf)) return null;
   let upcoming: CatalogDate | null = null;
   for (const date of occurrence.dates) {
@@ -162,12 +143,12 @@ export function currentActivityDate(occurrence: CatalogOccurrence, asOf: string)
   return upcoming;
 }
 
-export function queryCatalog(catalog: Catalog, filters: Filters, options: QueryOptions): QueryResult {
+export function queryCatalog<T extends SelectionOccurrence>(catalog: SelectionCatalog & { occurrences: T[] }, filters: Filters, options: QueryOptions): QueryResult<T> {
   validateFilters(filters);
   let occurrences = catalog.occurrences;
   if (options.mode === 'current') {
     if (!options.asOf || !validDay(options.asOf)) throw new FilterError('当前活动需要有效的 YYYY-MM-DD 参考日期。');
-    const upcoming: { occurrence: CatalogOccurrence; day: string }[] = [];
+    const upcoming: { occurrence: T; day: string }[] = [];
     for (const occurrence of occurrences) {
       const date = currentActivityDate(occurrence, options.asOf);
       if (date) upcoming.push({ occurrence, day: date.normalized_date! });
@@ -181,13 +162,13 @@ export function queryCatalog(catalog: Catalog, filters: Filters, options: QueryO
   const colleges = new Set(filters.college);
   const sources = new Set(filters.source);
   const seenItems = new Set<string>();
-  const matching: CatalogOccurrence[] = [];
+  const matching: T[] = [];
   for (const occurrence of occurrences) {
     if (options.issueId && occurrence.issue_id !== options.issueId) continue;
     if (hits && !hits.has(occurrence.id)) continue;
     if (categories.size && (occurrence.category === null || !categories.has(occurrence.category))) continue;
     if (colleges.size && !occurrence.colleges.some((college) => colleges.has(college))) continue;
-    if (sources.size && !sourceTypesForHosts(occurrence.source_hosts).some((source) => sources.has(source))) continue;
+    if (sources.size && !sourceTypesForHosts(originalHosts(occurrence)).some((source) => sources.has(source))) continue;
     if (filters.following && !occurrence.colleges.some((college) => options.followedColleges.has(college))) continue;
     if (options.mode === 'favorites' && !options.favorites.has(occurrence.item_id)) continue;
     if ((filters.issue_from || filters.issue_to) && (occurrence.issue_date === null || !validDay(occurrence.issue_date)

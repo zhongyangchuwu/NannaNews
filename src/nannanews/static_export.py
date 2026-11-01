@@ -563,12 +563,18 @@ def _manifest_paths(files, version, schema_version=2):
     prefix = 'versions/' + version + '/'
     if schema_version == 3:
         prefix += 'reader-v3/'
-        if not isinstance(files, dict) or set(files) != {'issues', 'item_index', 'partitions', 'search_index'}:
+        required = {'issues', 'item_index', 'partitions', 'search_index'}
+        if (not isinstance(files, dict) or not required.issubset(files)
+                or set(files) - required - {'selection_index', 'history_index'}):
             raise ValueError('Invalid deployment manifest files.')
         if (files['issues'] != prefix + 'issues.json'
                 or files['item_index'] != prefix + 'item-index.json'
                 or files['search_index'] != prefix + 'search-index.json'):
             raise ValueError('Invalid deployment manifest paths.')
+        if 'selection_index' in files and files['selection_index'] != prefix + 'selection-index.json':
+            raise ValueError('Invalid selection index path.')
+        if 'history_index' in files and files['history_index'] != prefix + 'history-index.json':
+            raise ValueError('Invalid history index path.')
         partitions = files['partitions']
         if not isinstance(partitions, dict) or any(
                 not isinstance(key, str) or not re.fullmatch(r'issue-[0-9a-f]{24}|standalone', key)
@@ -576,6 +582,10 @@ def _manifest_paths(files, version, schema_version=2):
                 for key, value in partitions.items()):
             raise ValueError('Invalid partition mapping.')
         paths = [files['issues'], files['item_index'], files['search_index'], *partitions.values()]
+        if 'selection_index' in files:
+            paths.append(files['selection_index'])
+        if 'history_index' in files:
+            paths.append(files['history_index'])
     else:
         base = _manifest_files(version)
         if not isinstance(files, dict) or any(files.get(key) != value for key, value in base.items()):

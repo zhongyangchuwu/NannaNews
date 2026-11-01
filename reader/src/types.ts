@@ -74,6 +74,10 @@ export interface PublicOccurrence extends Omit<CatalogOccurrence, 'dates' | 'man
 export interface CatalogItem { id: string; aliases: string[]; latest_occurrence_id: string; occurrence_count: number; detail_path?: string }
 export interface PublicItemDetail { id: string; latest_occurrence_id: string; occurrences: PublicOccurrence[] }
 export interface Catalog { items: CatalogItem[]; occurrences: CatalogOccurrence[] }
+export type HistoryOccurrence = Pick<CatalogOccurrence, 'id' | 'item_id' | 'issue_id'>;
+export interface HistoryIndex { occurrences: HistoryOccurrence[]; options: { categories: string[]; colleges: string[]; sources: string[] } }
+export type SelectionOccurrence = Pick<CatalogOccurrence, 'id' | 'item_id' | 'issue_id' | 'category' | 'issue_date' | 'source_hosts' | 'colleges' | 'dates' | 'content_status' | 'manual_review'>;
+export interface SelectionCatalog { occurrences: SelectionOccurrence[] }
 export interface PublicDocument {
   id: string; format: 'html' | 'pdf'; filename: string;
   claimed_issue_date: string | null; issue_date: string | null; pdf_path: string | null;
@@ -89,15 +93,15 @@ interface ManifestBase {
 }
 export type Manifest = ManifestBase & (
   | { schema_version: 2; generator: 'webnews-static-v2'; files: { catalog: string; issues: string; search_documents: string; search_index: string; issue_catalogs?: Record<string, string>; item_index?: string } }
-  | { schema_version: 3; generator: 'nannanews-reader-v3'; files: { issues: string; item_index: string; partitions: Record<string, string>; search_index: string } }
+  | { schema_version: 3; generator: 'nannanews-reader-v3'; files: { issues: string; item_index: string; partitions: Record<string, string>; search_index: string; selection_index?: string; history_index?: string } }
 );
 export interface Filters {
   q: string; category: string[]; college: string[]; source: string[];
   issue_from: string; issue_to: string; date_type: DateKind; date_from: string; date_to: string;
   date_status: 'all' | 'known' | 'unknown'; following: boolean; page: number;
 }
-export interface QueryResult {
-  records: CatalogOccurrence[]; matchingRecords: CatalogOccurrence[];
+export interface QueryResult<T extends HistoryOccurrence = CatalogOccurrence> {
+  records: T[]; matchingRecords: T[];
   total: number; page: number; pages: number; per_page: 20;
 }
 export interface QueryOptions {

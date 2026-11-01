@@ -10,17 +10,11 @@ import { ShareButton } from './ShareButton';
 import { itemSharePath } from '../sharing';
 import { participationUrl } from '../participation';
 import { confirmedActivityDate, hasVerifiedManualReview, manualPublicUrl } from '../filter';
+import { originalSourceUrl, sourceUrls } from '../source-links.mjs';
+const safeHttpUrl = originalSourceUrl;
 
-function safeHttpUrl(raw: string) {
-  try {
-    const url = new URL(raw);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
-  } catch {
-    return null;
-  }
-}
 
-function DateEvidence({ dates, emptyText, expandEvidence = false }: { dates: PublicDate[]; emptyText: string; expandEvidence?: boolean }) {
+function DateEvidence({ dates, emptyText, expandEvidence = false, referenceOnly = false }: { dates: PublicDate[]; emptyText: string; expandEvidence?: boolean; referenceOnly?: boolean }) {
   if (dates.length === 0) return <p className="detail-empty-note">{emptyText}</p>;
   return <div className="date-evidence-list">
     {dates.map((date, index) => {
@@ -30,7 +24,7 @@ function DateEvidence({ dates, emptyText, expandEvidence = false }: { dates: Pub
         <span className="date-evidence-type">{dateType}</span>
         <div>
           <strong>{expandEvidence && known ? date.normalized_date : date.raw_text || (known ? date.normalized_date : '原文日期未明')}</strong>
-          {date.literal_source === 'primary' && <Badge variant="accent">引句来自原文</Badge>}
+          {date.literal_source === 'primary' && <Badge variant={referenceOnly ? 'muted' : 'accent'}>{referenceOnly ? '历史原文标记（待核对）' : '引句来自原文'}</Badge>}
           {date.literal_source === 'bulletin' && <Badge variant="muted">刊物引句</Badge>}
           {!expandEvidence && known && date.raw_text !== date.normalized_date && <span className="date-normalized">{date.resolution === 'contextual' ? '上下文推定' : '日期规范化'}：{date.normalized_date}</span>}
           {date.resolution === 'contextual' && <Badge variant="warning">上下文推定</Badge>}
@@ -55,10 +49,14 @@ function orderedActivityDates<T extends { kind: string; resolution?: string }>(d
 
 interface DateClaimGroups { primary: PublicDate[]; contextualBulletin: PublicDate[]; reference: PublicDate[] }
 
-function groupDateClaims(claims: PublicDate[]): DateClaimGroups {
+function groupDateClaims(claims: PublicDate[], occurrence: PublicOccurrence, factsOnly: boolean): DateClaimGroups {
   const groups: DateClaimGroups = { primary: [], contextualBulletin: [], reference: [] };
+  const replaced = new Set((occurrence.source_corrections ?? []).map((correction) => correction.original_url));
+  const sources = (occurrence.date_review?.source_review.sources ?? []).filter((source) =>
+    !replaced.has(source.url) && originalSourceUrl(source.url) && originalSourceUrl(source.resolved_url));
   for (const claim of claims) {
-    if (claim.literal_source === 'primary' && ACTIVITY_DATE_KINDS[claim.kind]) groups.primary.push(claim);
+    const supported = factsOnly || Boolean(claim.raw_text && sources.some((source) => source.quotes.some((quote) => quote.includes(claim.raw_text))));
+    if (claim.literal_source === 'primary' && ACTIVITY_DATE_KINDS[claim.kind] && supported) groups.primary.push(claim);
     else if (claim.literal_source === 'bulletin' && claim.resolution === 'contextual' && ACTIVITY_DATE_KINDS[claim.kind]) groups.contextualBulletin.push(claim);
     else groups.reference.push(claim);
   }
@@ -72,22 +70,31 @@ function currentActivity(occurrence: PublicOccurrence, state: ReaderState): Acti
   if (!review || !version || review.rules_version !== version || review.source_review.status !== 'source_verified') return null;
   const replaced = new Set((occurrence.source_corrections ?? []).map((correction) => correction.original_url));
   if (review.source_review.sources.some((source) => replaced.has(source.url))) return null;
-  return review.source_review.activity ?? null;
+  const activity = review.source_review.activity;
+  const sources = review.source_review.sources;
+  const blockedUrls = new Set(sources.filter((source) => !originalSourceUrl(source.url) || !originalSourceUrl(source.resolved_url)).map((source) => source.url));
+  if (sources.length > 0 && sources.every((source) => blockedUrls.has(source.url))) return null;
+  if (activity) {
+    const citations = [activity.title, activity.summary, activity.content, activity.time, activity.venue, activity.organizer, activity.audience, activity.participation]
+      .flatMap((field) => field.evidence).concat(activity.colleges.map((college) => college.evidence));
+    if (citations.some((citation) => !originalSourceUrl(citation.url) || blockedUrls.has(citation.url))) return null;
+  }
+  return activity ?? null;
 }
 
-function ActivityCitationEvidence({ citation }: { citation: ActivityCitation }) {
-  const href = safeHttpUrl(citation.url);
+function ActivityCitationEvidence({ citation, blockedUrls }: { citation: ActivityCitation; blockedUrls?: Set<string> }) {
+  const href = blockedUrls?.has(citation.url) ? null : safeHttpUrl(citation.url);
   return <div className="activity-citation">
     <blockquote>{citation.text}</blockquote>
     {href && <a href={href} target="_blank" rel="noopener noreferrer">{citation.url}<ExternalLink size={14} aria-hidden="true" /></a>}
   </div>;
 }
 
-function ActivityFieldEvidence({ field, label }: { field: ActivityField; label: string }) {
+function ActivityFieldEvidence({ field, label, blockedUrls }: { field: ActivityField; label: string; blockedUrls?: Set<string> }) {
   if (field.evidence.length === 0) return null;
   return <details className="activity-field-evidence">
     <summary>{label}来源依据（{field.evidence.length} 条）</summary>
-    {field.evidence.map((citation, index) => <ActivityCitationEvidence key={`${citation.url}-${citation.image_index}-${index}`} citation={citation} />)}
+    {field.evidence.map((citation, index) => <ActivityCitationEvidence key={`${citation.url}-${citation.image_index}-${index}`} citation={citation} blockedUrls={blockedUrls} />)}
   </details>;
 }
 
@@ -154,14 +161,12 @@ function ManualActivityPanel({ occurrence }: { occurrence: PublicOccurrence }) {
   const activity = review?.activity;
   if (!review || !activity) return null;
   const verified = hasVerifiedManualReview(occurrence);
+  const links = sourceUrls(activity.source_urls).filter((url) => manualPublicUrl(url));
   return <section className="detail-section manual-activity">
     <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>{verified ? '人工核实内容' : '人工填写内容（待核对）'}</h2><p>{occurrence.kind === 'standalone' ? '此活动由人工登记并明确发布，不属于原刊期次，也不新增来源证据。' : '人工修改独立于下方留存的 AI 与原刊记录，不新增 AI 来源证明。'}</p></div></div>
     <div className="original-text">{activity.content}</div>
     <section className="reference-block manual-source-links"><h3>{verified ? '人工确认的来源链接' : '人工填写的来源链接（待核对）'}</h3>
-      {activity.source_urls.length ? <ul className="source-link-list">{activity.source_urls.map((raw) => {
-        const href = manualPublicUrl(raw);
-        return href ? <li key={raw}><a href={href} target="_blank" rel="noopener noreferrer"><span>{raw}</span><ExternalLink size={14} aria-hidden="true" /></a></li> : null;
-      })}</ul> : <p className="detail-empty-note">未填写来源链接。</p>}
+      {links.length ? <ul className="source-link-list">{links.map((href) => <li key={href}><a href={href} target="_blank" rel="noopener noreferrer"><span>{href}</span><ExternalLink size={14} aria-hidden="true" /></a></li>)}</ul> : <p className="detail-empty-note">原始来源链接未提供。</p>}
     </section>
   </section>;
 }
@@ -170,6 +175,7 @@ function PublicFactsPanel({ occurrence }: { occurrence: PublicOccurrence }) {
   const labels = { time: '活动时间', venue: '地点', audience: '面向对象', participation: '参与方式' } as const;
   const dates = orderedActivityDates(occurrence.dates.filter((date) => ACTIVITY_DATE_KINDS[date.kind]
     && confirmedActivityDate(occurrence, date)));
+  const links = sourceUrls(occurrence.source_urls).filter((url) => manualPublicUrl(url));
   return <section className="detail-section manual-activity">
     <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div>
       <h2>{occurrence.kind === 'standalone' ? '独立收录的活动基本信息' : '活动公开基本信息'}</h2>
@@ -184,10 +190,7 @@ function PublicFactsPanel({ occurrence }: { occurrence: PublicOccurrence }) {
       </div>)}
     </dl>
     <section className="reference-block manual-source-links"><h3>公开来源链接</h3>
-      {occurrence.source_urls.length ? <ul className="source-link-list">{occurrence.source_urls.map((raw) => {
-        const href = manualPublicUrl(raw);
-        return href ? <li key={raw}><a href={href} target="_blank" rel="noopener noreferrer"><span>{raw}</span><ExternalLink size={14} aria-hidden="true" /></a></li> : null;
-      })}</ul> : <p className="detail-empty-note">未附公开来源链接。</p>}
+      {links.length ? <ul className="source-link-list">{links.map((href) => <li key={href}><a href={href} target="_blank" rel="noopener noreferrer"><span>{href}</span><ExternalLink size={14} aria-hidden="true" /></a></li>)}</ul> : <p className="detail-empty-note">原始来源链接未提供。</p>}
     </section>
   </section>;
 }
@@ -205,19 +208,26 @@ function StandaloneReference({ occurrence, referenceClaims }: { occurrence: Publ
     </section>}
     {referenceClaims.length > 0 && <section className="reference-block">
       <h3>AI 日期判断（仅参考，不代表原始来源已核实）</h3>
-      <DateEvidence dates={referenceClaims} emptyText="没有其他可供参考的日期判断。" expandEvidence />
+      <DateEvidence dates={referenceClaims} emptyText="没有其他可供参考的日期判断。" expandEvidence referenceOnly />
     </section>}
   </section>;
 }
 
 
-function manualParticipationUrl(activity: ManualActivity | undefined): string | null {
+function manualParticipationUrl(activity: ManualActivity | undefined, blockedUrls: Set<string>): string | null {
   if (!activity?.participation) return null;
   for (const match of activity.participation.matchAll(/https?:\/\/[^\s<>"）)」』，。；、]+/gi)) {
     const href = manualPublicUrl(match[0]);
-    if (href) return href;
+    if (href && originalSourceUrl(href) && !blockedUrls.has(match[0]) && !blockedUrls.has(href)) return href;
   }
   return null;
+}
+
+function primaryParticipationUrl(field: ActivityField | undefined, blockedUrls: Set<string>): string | null {
+  if (!field?.value) return null;
+  const value = field.value.replace(/https?:\/\/[^\s<>"）)」』，。；、]+/gi,
+    (url) => originalSourceUrl(url) && !blockedUrls.has(url) && !blockedUrls.has(originalSourceUrl(url)!) ? url : '');
+  return participationUrl({ ...field, value });
 }
 
 function SourceLinks({ occurrence, state }: { occurrence: PublicOccurrence; state: ReaderState }) {
@@ -233,13 +243,14 @@ function SourceLinks({ occurrence, state }: { occurrence: PublicOccurrence; stat
     source_unavailable: '原始来源未能读取', source_mismatch: '链接未返回对应原文',
     secondary_only: '尚未完成当前规则下的 AI 原文核验',
   };
+  const blockedRedirects = new Set((review?.sources ?? []).filter((source) => !originalSourceUrl(source.resolved_url)).map((source) => source.url));
   const links = [...new Set([...occurrence.source_urls, ...(review?.sources.map((source) => source.url) ?? []), ...corrections.map((correction) => correction.corrected_url)])]
-    .filter((url) => !replaced.has(url)).map((raw) => ({ raw, href: safeHttpUrl(raw) })).filter((entry) => entry.href);
+    .filter((url) => !replaced.has(url) && !blockedRedirects.has(url)).map((raw) => ({ raw, href: safeHttpUrl(raw) })).filter((entry) => entry.href);
   return <>
     {corrections.length > 0 && <div className="document-evidence source-corrections" aria-label="来源链接纠正记录">
       <Badge variant="accent">已人工校正来源</Badge>
       {corrections.map((correction) => {
-        const correctedHref = safeHttpUrl(correction.corrected_url);
+        const correctedHref = blockedRedirects.has(correction.corrected_url) ? null : safeHttpUrl(correction.corrected_url);
         return <details key={`${correction.original_url}-${correction.corrected_url}`}>
           <summary>校正说明与原刊链接</summary>
           <p>{correction.reason}</p>
@@ -253,6 +264,7 @@ function SourceLinks({ occurrence, state }: { occurrence: PublicOccurrence; stat
       {occurrence.content_status === 'needs_review' ? <p>同一活动仍有待核对记录；以下来源快照不代表日期或来源冲突已经解决。</p>
         : staleReview ? <p>来源链接已人工校正；旧来源核验不代表新链接、日期或活动内容已核实。</p>
         : legacyReview ? <Badge variant="muted">历史留存来源</Badge>
+        : review?.status === 'source_verified' && (!review.sources.some((source) => originalSourceUrl(source.url) && originalSourceUrl(source.resolved_url)) || Boolean(review.activity && !currentActivity(occurrence, state))) ? <p>留存核验记录不能在此确认原始来源；请查阅保留的核查记录。</p>
         : review ? <><Badge variant={review.status === 'source_verified' ? 'accent' : 'warning'}>{labels[review.status]}</Badge>
         {review.reason !== occurrence.date_review?.reason && <p>{review.reason}</p>}</>
         : <p>{corrections.length ? '尚未完成当前规则下的 AI 原文与日期核查；人工校正链接不代表日期或活动内容已核实。' : '尚未进行 AI 来源核验；以下链接由刊物留存，不能据此视为原文已核实。'}</p>}
@@ -265,7 +277,7 @@ function SourceLinks({ occurrence, state }: { occurrence: PublicOccurrence; stat
           {captured.resolved_url !== raw && safeHttpUrl(captured.resolved_url) && <p><a href={captured.resolved_url} target="_blank" rel="noopener noreferrer">查看实际返回页面<ExternalLink size={14} aria-hidden="true" /></a></p>}
         </div>}
       </li>;
-    })}</ul> : <p className="detail-empty-note">本条记录未附可访问的来源链接。</p>}
+    })}</ul> : <p className="detail-empty-note">原始来源链接未提供。</p>}
   </>;
 }
 
@@ -350,6 +362,7 @@ function ContentConfirmation({ occurrence, state, activity }: { occurrence: Publ
   else if (!review) message = '尚无当前规则下的来源核验记录；原刊文字仅作为参考。';
   else if (staleReview) message = '来源已人工校正；旧来源核验不代表新链接、日期或活动内容已核实。';
   else if (!currentRules) message = '此为历史核查记录，不构成当前规则下的活动内容确认；旧日期仅在下方作为参考。';
+  else if (sourceReview?.status === 'source_verified' && sourceReview.sources.some((source) => !originalSourceUrl(source.url) || !originalSourceUrl(source.resolved_url)) && !activity) message = '留存核验记录包含刊物归档；原始来源及其活动内容仍需核对。';
   else if (sourceReview?.status === 'source_verified' && activity) message = '以下为 AI 根据已读取的原始来源整理的信息，不等于人工审核结论。';
   else if (sourceReview?.status === 'source_verified') message = '原始来源有核验记录，但未提供当前规则下的完整活动内容；旧日期仅作参考。';
   else if (sourceReview?.status === 'source_conflict') message = '原始来源与刊物存在冲突，活动内容未确认。';
@@ -462,6 +475,8 @@ function OriginalExcerpt({ occurrence, state }: { occurrence: PublicOccurrence; 
 function BulletinReference({ occurrence, state, referenceClaims }: { occurrence: PublicOccurrence; state: ReaderState; referenceClaims: PublicDate[] }) {
   const referenceDates = occurrence.original_dates ?? occurrence.dates;
   const issue = occurrence.issue_id ? state.issues.find((entry) => entry.id === occurrence.issue_id) ?? null : null;
+  const blockedUrls = new Set((occurrence.date_review?.source_review.sources ?? [])
+    .filter((source) => !originalSourceUrl(source.resolved_url)).map((source) => source.url));
   return <section className="detail-section reference-section">
     <div className="section-heading"><span className="section-icon"><FileText size={17} aria-hidden="true" /></span><div><h2>原刊与存档参考</h2><p>以下保留原刊资料、来源链接和档案内容；这些内容不替代已核验的活动字段。</p></div></div>
     <dl className="archive-metadata">
@@ -486,7 +501,7 @@ function BulletinReference({ occurrence, state, referenceClaims }: { occurrence:
         <ActivityTextField field={occurrence.date_review.source_review.activity.title} label="AI 留存标题" />
         <ActivityTextField field={occurrence.date_review.source_review.activity.summary} label="AI 留存摘要" />
         <ActivityTextField field={occurrence.date_review.source_review.activity.content} label="AI 留存正文" />
-        {(['title', 'summary', 'content', ...ACTIVITY_FACT_FIELDS.map(([key]) => key)] as const).map((key) => <ActivityFieldEvidence key={key} field={occurrence.date_review!.source_review.activity![key]} label={key} />)}
+        {(['title', 'summary', 'content', ...ACTIVITY_FACT_FIELDS.map(([key]) => key)] as const).map((key) => <ActivityFieldEvidence key={key} field={occurrence.date_review!.source_review.activity![key]} label={key} blockedUrls={blockedUrls} />)}
       </>}
     </section>}
     {occurrence.manual_review && <PrimaryActivityImages images={occurrence.primary_images} state={state} />}
@@ -496,7 +511,7 @@ function BulletinReference({ occurrence, state, referenceClaims }: { occurrence:
     </section>}
     {referenceClaims.length > 0 && <section className="reference-block">
       <h3>AI 日期判断（仅参考，不代表原始来源已核实）</h3>
-      <DateEvidence dates={referenceClaims} emptyText="没有其他可供参考的日期判断。" expandEvidence />
+      <DateEvidence dates={referenceClaims} emptyText="没有其他可供参考的日期判断。" expandEvidence referenceOnly />
     </section>}
     {occurrence.college_mentions.length > 0 && <section className="reference-block">
       <h3>原刊学院提及（参考）</h3>
@@ -569,16 +584,19 @@ export function ItemDetail({ state }: { state: ReaderState }) {
   const manuallyReviewed = Boolean(manualReview);
   const humanVerified = hasVerifiedManualReview(occurrence);
   const dateClaims: DateClaimGroups = activity
-    ? groupDateClaims(occurrence.date_review?.claims ?? [])
+    ? groupDateClaims(occurrence.date_review?.claims ?? [], occurrence, Boolean(state.manifest?.public_facts_only))
     : { primary: [], contextualBulletin: [], reference: occurrence.date_review?.claims ?? [] };
   const replaced = new Set((occurrence.source_corrections ?? []).map((correction) => correction.original_url));
+  const blockedRedirects = new Set((occurrence.date_review?.source_review.sources ?? [])
+    .filter((source) => !originalSourceUrl(source.resolved_url))
+    .flatMap((source) => [source.url, originalSourceUrl(source.url)].filter((url): url is string => Boolean(url))));
   const sources = manual ? manual.source_urls
-    : [activity?.title.evidence[0]?.url, ...(occurrence.source_corrections ?? []).map((correction) => correction.corrected_url), ...occurrence.source_urls];
-  const sourceHref = manual ? sources.filter((url): url is string => Boolean(url)).map(manualPublicUrl).find(Boolean)
-    : sources.filter((url): url is string => Boolean(url) && !replaced.has(url!)).map(safeHttpUrl).find(Boolean);
-  const original = sourceDocument(occurrence, state);
-  const noticeHref = sourceHref ?? (original?.format === 'pdf' && original.pdf_path ? state.assetUrl(original.pdf_path) : null);
-  const participationHref = manual ? humanVerified ? manualParticipationUrl(manual) : null : participationUrl(activity?.participation);
+    : [activity?.title.evidence[0]?.url, ...(occurrence.source_corrections ?? []).map((correction) => correction.corrected_url), ...occurrence.source_urls, ...(occurrence.date_review?.source_review.sources.map((source) => source.url) ?? [])];
+  const sourceHref = sources.filter((url): url is string => Boolean(url) && !replaced.has(url!) && !blockedRedirects.has(url!))
+    .map((url) => manual ? manualPublicUrl(url) : url).filter((url): url is string => Boolean(url))
+    .map(originalSourceUrl).find(Boolean);
+  const participationCandidate = manual ? humanVerified ? manualParticipationUrl(manual, blockedRedirects) : null : primaryParticipationUrl(activity?.participation, blockedRedirects);
+  const participationHref = participationCandidate ? originalSourceUrl(participationCandidate) : null;
   const title = manual?.title ?? (activity ? activity.title.value ?? '活动标题未确认' : occurrence.title);
   const summary = manual?.summary ?? activity?.summary.value ?? occurrence.preview;
   const category = manual ? manual.category : occurrence.category;
@@ -596,7 +614,7 @@ export function ItemDetail({ state }: { state: ReaderState }) {
       </div>
       <header className="detail-header">
         <h1>{title}</h1>
-        <OccurrenceWarnings occurrence={occurrence} today={state.today} dateClaims={manual ? occurrence.dates : activity ? [...dateClaims.primary, ...dateClaims.contextualBulletin] : []} />
+        <OccurrenceWarnings occurrence={!manual && occurrence.date_review && !state.manifest?.public_facts_only ? { ...occurrence, dates: [] } : occurrence} today={state.today} dateClaims={manual ? occurrence.dates : activity ? [...dateClaims.primary, ...dateClaims.contextualBulletin] : []} />
         {state.manifest?.public_facts_only ? <>
           {manuallyReviewed && <ManualConfirmation occurrence={occurrence} />}
           <PublicFactsNotice />
@@ -605,8 +623,8 @@ export function ItemDetail({ state }: { state: ReaderState }) {
         {manual ? <ManualFacts activity={manual} verified={humanVerified} /> : activity && <ActivityFacts activity={activity} category={occurrence.category} dates={dateClaims.primary} />}
         <div className="detail-primary-actions">
           {participationHref ? <a className="reader-button reader-button--primary reader-button--default" href={participationHref} target="_blank" rel="noopener noreferrer">{manual ? '查看参与方式（人工确认）' : '查看参与方式'}<ExternalLink size={15} aria-hidden="true" /><span className="visually-hidden">（新窗口打开）</span></a>
-            : noticeHref ? <a className="detail-source-action" href={noticeHref} target="_blank" rel="noopener noreferrer">{sourceHref ? manuallyReviewed ? humanVerified ? '查看来源链接（人工确认）' : '查看来源链接（待核对）' : activity ? '查看原始通知' : '查看来源链接' : '查看原刊 PDF'}<ExternalLink size={15} aria-hidden="true" /></a>
-              : <p className="detail-empty-note">{occurrence.kind === 'standalone' ? '此条为独立收录，不属于刊物期次；公开来源链接见下方。' : state.manifest?.public_facts_only ? '此精简事实版不包含原刊附件，请查看已公开来源链接。' : '未附可访问的原始通知，可参考下方原刊文字。'}</p>}
+            : sourceHref ? <a className="detail-source-action" href={sourceHref} target="_blank" rel="noopener noreferrer">{manuallyReviewed ? humanVerified ? '查看来源链接（人工确认）' : '查看来源链接（待核对）' : activity ? '查看原始通知' : '查看来源链接'}<ExternalLink size={15} aria-hidden="true" /></a>
+              : <p className="detail-empty-note">原始来源链接未提供；可参考下方留存记录。</p>}
         </div>
         <div className="detail-badges">{category && <Badge variant="muted">{category}</Badge>}{occurrence.kind === 'standalone' && <Badge variant="muted">独立收录</Badge>}{state.manifest?.public_facts_only ? <ContentBadge status={occurrence.content_status} /> : <Badge variant={manuallyReviewed ? humanVerified ? 'accent' : 'warning' : activity ? 'muted' : 'warning'}>{manuallyReviewed ? humanVerified ? '人工核实' : '人工记录·待核对' : activity ? '已对照原文' : '原刊参考'}</Badge>}</div>
       </header>
