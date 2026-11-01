@@ -18,7 +18,7 @@ import subprocess
 from bs4 import BeautifulSoup
 import pytest
 
-from nannanews import public_metadata_export, reader_review_export as publisher
+from nannanews import public_metadata_export, reader_review_export as publisher, static_export
 from nannanews.reader_reviews import ReviewError, ReviewStore
 from nannanews.static_export import GENERATOR, _json, _manifest_files
 
@@ -172,6 +172,13 @@ def test_publish_all_occurrences_preserves_raw_history_and_updates_search_share(
     assert result['version'] == manifest['data_version'] != BASE
     assert load(settings.reader_site_data_dir)[0] == manifest
     assert manifest['review_base_version'] == BASE
+    assert json.loads((source / manifest['files']['item_index']).read_bytes()) == catalog['items']
+    for issue_id in ISSUES:
+        issue_catalog = json.loads((source / manifest['files']['issue_catalogs'][issue_id]).read_bytes())
+        assert issue_catalog['occurrences'] == [row for row in catalog['occurrences'] if row['issue_id'] == issue_id]
+        reviewed = next(row for row in issue_catalog['occurrences'] if row['item_id'] == ITEM)
+        assert reviewed['manual_review']['revision'] == revision['revision']
+        assert 'activity' not in reviewed['manual_review'] and 'body_text' not in reviewed
     for row in catalog['occurrences'][:2]:
         assert row['title'] == payload()['activity']['title']
         assert row['preview'] == payload()['activity']['summary']
@@ -224,6 +231,34 @@ console.log(JSON.stringify(index.search('HumanSearchNeedle').map(row=>row.id)));
     assert not (settings.reader_site_data_dir.parent / 'share' / 'items' / OTHER).exists()
     assert published_map(settings) == [{ITEM: revision['revision']}]
     assert store.get_item(ITEM)['unpublished'] is False
+
+
+def test_additive_base_manifest_remains_readable_and_publishes_new_projections_twice(pack, node_builders):
+    settings, store, _, _ = pack
+    for root in (settings.reader_data_dir, settings.reader_site_data_dir):
+        manifest, catalog, _ = load(root)
+        issues = json.loads((root / manifest['files']['issues']).read_bytes())
+        manifest['files'].update(static_export._write_catalog_projections(root / 'versions' / BASE, catalog, issues, BASE))
+        (root / 'manifest.json').write_bytes(_json(manifest))
+    assert store.get_item(ITEM)['base_version'] == BASE
+    first_revision = save(store)
+    first = publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    first_manifest, _, _ = load(settings.reader_data_dir)
+    assert first_manifest['files']['item_index'].startswith('versions/' + first['version'] + '/')
+    second_revision = save(store, payload(title='第二次人工修订'), expected=first_revision['revision'])
+    second = publisher.publish_reviews(settings=settings, actor=PRIVATE)
+    manifest, catalog, _ = load(settings.reader_data_dir)
+    assert second['version'] != first['version']
+    assert manifest['files']['item_index'].startswith('versions/' + second['version'] + '/')
+    assert json.loads((settings.reader_data_dir / manifest['files']['item_index']).read_bytes()) == catalog['items']
+    for issue_id in ISSUES:
+        relative = manifest['files']['issue_catalogs'][issue_id]
+        assert relative.startswith('versions/' + second['version'] + '/')
+        issue = json.loads((settings.reader_data_dir / relative).read_bytes())
+        reviewed = next(row for row in issue['occurrences'] if row['item_id'] == ITEM)
+        assert reviewed['title'] == '第二次人工修订'
+        assert reviewed['manual_review']['revision'] == second_revision['revision']
+        assert 'activity' not in reviewed['manual_review']
 
 
 def test_preparation_failure_does_not_switch_either_live_manifest(pack, monkeypatch):

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import type { Catalog, Manifest, PublicImage, PublicIssue, PublicOccurrence } fr
 const run = promisify(execFile);
 const stageData = fileURLToPath(new URL('../scripts/stage-data.mjs', import.meta.url));
 const stagePublicFacts = fileURLToPath(new URL('../scripts/stage-public-facts.mjs', import.meta.url));
+const projectionsScript = fileURLToPath(new URL('../scripts/catalog-projections.mjs', import.meta.url));
 const buildSearch = fileURLToPath(new URL('../scripts/build-search.mjs', import.meta.url));
 const version = 'a'.repeat(64);
 const prefix = `versions/${version}`;
@@ -41,7 +42,8 @@ async function dataset() {
   const output = join(reader, 'public/data');
   await mkdir(dirname(cli), { recursive: true });
   await mkdir(join(reader, 'public'), { recursive: true });
-  await Promise.all([copyFile(stageData, cli), copyFile(stagePublicFacts, join(reader, 'scripts/stage-public-facts.mjs'))]);
+  await Promise.all([copyFile(stageData, cli), copyFile(stagePublicFacts, join(reader, 'scripts/stage-public-facts.mjs')),
+    copyFile(projectionsScript, join(reader, 'scripts/catalog-projections.mjs'))]);
 
   const ordinary = image('ordinary-image', Buffer.from('ordinary preview bytes'));
   const shared = image('shared-image', Buffer.from('shared preview bytes'));
@@ -49,7 +51,8 @@ async function dataset() {
   const occurrence: PublicOccurrence = {
     id: 'occurrence-1', item_id: 'item-1', issue_id: 'issue-1', document_id: 'document-1', kind: 'detail',
     title: '公开讲座', category: '活动', preview: '公开预览', issue_date: '2026-10-24', source_urls: [sourceUrl],
-    source_hosts: ['example.edu'], colleges: [], dates: [], expiry_date: null, image_count: 4,
+    source_hosts: ['example.edu'], colleges: [], dates: [{ kind: 'event', normalized_date: '2026-12-20',
+      resolution: 'explicit', raw_text: 'December 20', evidence: 'detail evidence' }], expiry_date: null, image_count: 4,
     date_review: null, body_text: '公开正文', college_mentions: [], images: [ordinary.ref, shared.ref],
     primary_images: [shared.ref, primaryOnly.ref], locator: {}, table_cells: [],
   };
@@ -102,8 +105,12 @@ function factsFixture() {
   const facts = {
     schema_version: 1,
     items: [
-      { id: existingItemId, aliases: [], latest_occurrence_id: existingOccurrenceId, occurrence_count: 1,
-        occurrences: [{ id: existingOccurrenceId, item_id: existingItemId, issue_id: latestIssueId, document_id: latestDocumentId,
+      { id: existingItemId, aliases: [`item-${'7'.repeat(24)}`], latest_occurrence_id: existingOccurrenceId, occurrence_count: 2,
+        occurrences: [{ id: `occ-${'8'.repeat(24)}`, item_id: existingItemId, issue_id: olderIssueId, document_id: olderDocumentId,
+          kind: 'summary', title: 'Older public activity', category: '活动', preview: 'Older summary',
+          issue_date: '2026-03-22', source_urls: [sourceUrl], source_hosts: ['example.edu'], colleges: [], dates: [],
+          expiry_date: null, image_count: 0, content_status: 'verified' },
+          { id: existingOccurrenceId, item_id: existingItemId, issue_id: latestIssueId, document_id: latestDocumentId,
           kind: 'detail', title: 'Existing public activity', category: '活动', preview: 'Existing public summary',
           issue_date: '2026-10-13', source_urls: [sourceUrl], source_hosts: ['example.edu'], colleges: [],
           dates: [{ kind: 'event', normalized_date: '2026-12-20', resolution: 'explicit', literal_source: 'primary' }],
@@ -123,11 +130,13 @@ function factsFixture() {
     ],
     issues: [
       { id: olderIssueId, title: 'Older issue', issue_date: '2026-03-22', issue_number: 450,
-        occurrence_count: 0, documents: [{ id: olderDocumentId, format: 'pdf', filename: 'older.pdf',
+        occurrence_count: 1, documents: [{ id: olderDocumentId, format: 'pdf', filename: 'older.pdf',
           claimed_issue_date: '2026-03-22', issue_date: '2026-03-22', pdf_path: null, source_urls: [sourceUrl], warnings: [] }] },
       { id: latestIssueId, title: 'Latest issue', issue_date: '2026-10-13', issue_number: 451,
         occurrence_count: 1, documents: [{ id: latestDocumentId, format: 'html', filename: 'notice.html',
           claimed_issue_date: '2026-10-13', issue_date: '2026-10-13', pdf_path: null, source_urls: [sourceUrl], warnings: [] }] },
+      { id: `issue-${'a'.repeat(24)}`, title: 'Empty issue', issue_date: '2026-01-01', issue_number: 449,
+        occurrence_count: 0, documents: [] },
     ],
   };
   return { ...facts, data_version: createHash('sha256').update(stableJson(facts)).digest('hex') };
@@ -142,8 +151,17 @@ describe('public-data staging CLI', () => {
     const report = JSON.parse(stdout);
     const stagedManifest = JSON.parse(await readFile(join(fixture.output, 'manifest.json'), 'utf8')) as Manifest;
     const expectedPaths = ['manifest.json', fixture.manifest.files.catalog, fixture.manifest.files.issues,
-      fixture.manifest.files.search_documents, `${prefix}/items/item-1.json`, ...fixture.resources.map(({ ref }) => ref.path)];
+      fixture.manifest.files.search_documents, `${prefix}/items/item-1.json`,
+      ...Object.values(stagedManifest.files.issue_catalogs!), stagedManifest.files.item_index!, ...fixture.resources.map(({ ref }) => ref.path)];
     const stagedFiles = await Promise.all(expectedPaths.map((relative) => readFile(join(fixture.output, relative))));
+    const issueCatalog = JSON.parse(await readFile(join(fixture.output, stagedManifest.files.issue_catalogs!['issue-1']), 'utf8'));
+    const itemIndex = JSON.parse(await readFile(join(fixture.output, stagedManifest.files.item_index!), 'utf8'));
+    expect(itemIndex).toEqual(issueCatalog.items);
+    expect(issueCatalog.occurrences[0]).toMatchObject({ id: 'occurrence-1', title: '公开讲座', source_urls: [sourceUrl] });
+    expect(issueCatalog.occurrences[0]).not.toHaveProperty('body_text');
+    expect(issueCatalog.occurrences[0]).not.toHaveProperty('images');
+    expect(issueCatalog.occurrences[0]).not.toHaveProperty('date_review');
+    expect(issueCatalog.occurrences[0].dates).toEqual([{ kind: 'event', normalized_date: '2026-12-20', resolution: 'explicit' }]);
 
     expect(stagedManifest.counts.images).toBe(fixture.resources.length);
     expect(report).toMatchObject({ data_version: version, files: expectedPaths.length, counts: stagedManifest.counts,
@@ -171,19 +189,102 @@ describe('public-data staging CLI', () => {
     expect(report.source).toBe('activity-facts');
     expect(manifest.public_facts_only).toBe(true);
     expect(manifest.generated_at).toBeUndefined();
-    expect(manifest.counts).toEqual({ items: 2, occurrences: 2, issues: 2, documents: 2, images: 0, pdfs: 0 });
-    expect(issues.map((issue) => issue.id)).toEqual([`issue-${'9'.repeat(24)}`, `issue-${'3'.repeat(24)}`]);
+    expect(manifest.counts).toEqual({ items: 2, occurrences: 3, issues: 3, documents: 2, images: 0, pdfs: 0 });
+    expect(issues.map((issue) => issue.id)).toEqual([`issue-${'9'.repeat(24)}`, `issue-${'3'.repeat(24)}`, `issue-${'a'.repeat(24)}`]);
     expect(issues[0].issue_date).toBe('2026-10-13');
     expect(factsOccurrence).toMatchObject({ kind: 'standalone', issue_id: null, document_id: null,
       content_status: 'human_verified', source_id: `source-${'6'.repeat(24)}` });
     expect(standaloneDetail.body_text).toBe('');
     expect(standaloneDetail.date_review).toBeNull();
     expect(standaloneDetail.manual_review).not.toHaveProperty('activity');
+    const older = JSON.parse(await readFile(join(fixture.output, manifest.files.issue_catalogs![`issue-${'3'.repeat(24)}`]), 'utf8'));
+    const empty = JSON.parse(await readFile(join(fixture.output, manifest.files.issue_catalogs![`issue-${'a'.repeat(24)}`]), 'utf8'));
+    const itemIndex = JSON.parse(await readFile(join(fixture.output, manifest.files.item_index!), 'utf8'));
+    expect(older.occurrences.map((row: { id: string }) => row.id)).toEqual([`occ-${'8'.repeat(24)}`]);
+    expect(older.items[0]).toMatchObject({ latest_occurrence_id: `occ-${'2'.repeat(24)}`, occurrence_count: 2,
+      aliases: [`item-${'7'.repeat(24)}`], detail_path: catalog.items[0].detail_path });
+    expect(empty).toEqual({ items: [], occurrences: [] });
+    expect(itemIndex).toEqual(catalog.items);
+    expect(itemIndex).toContainEqual(standaloneItem);
+    expect(Object.values(manifest.files.issue_catalogs!)).toHaveLength(3);
     await run(process.execPath, [buildSearch, fixture.output]);
     const index = JSON.parse(await readFile(join(fixture.output, manifest.files.search_index), 'utf8'));
-    expect(index.documentCount).toBe(2);
+    expect(index.documentCount).toBe(3);
     const searchDocuments = JSON.parse(await readFile(join(fixture.output, manifest.files.search_documents), 'utf8'));
     expect(searchDocuments.map((row: { title: string }) => row.title)).toContain('Standalone public activity');
+  });
+
+  it('upgrades an existing legacy directory without replacing its data', async () => {
+    const fixture = await dataset();
+    await cp(fixture.source, fixture.output, { recursive: true });
+    await run(process.execPath, [fixture.cli, '--if-missing']);
+    const manifest = JSON.parse(await readFile(join(fixture.output, 'manifest.json'), 'utf8')) as Manifest;
+    const issue = JSON.parse(await readFile(join(fixture.output, manifest.files.issue_catalogs!['issue-1']), 'utf8'));
+    const itemIndex = JSON.parse(await readFile(join(fixture.output, manifest.files.item_index!), 'utf8'));
+    expect(issue.items).toEqual(itemIndex);
+    expect(issue.occurrences).toHaveLength(1);
+    expect(await readFile(join(fixture.output, fixture.resources[0].ref.path))).toEqual(fixture.resources[0].bytes);
+  });
+
+  it('skips complete projections and repairs a missing projection on the next run', async () => {
+    const fixture = await dataset();
+    await run(process.execPath, [fixture.cli, fixture.source]);
+    const manifestPath = join(fixture.output, 'manifest.json');
+    const original = await readFile(manifestPath);
+    const manifest = JSON.parse(original.toString('utf8')) as Manifest;
+    const asset = fixture.resources[2];
+    const assetPath = join(fixture.output, asset.ref.path);
+    await rm(assetPath);
+    const { stdout } = await run(process.execPath, [fixture.cli, '--if-missing']);
+    expect(JSON.parse(stdout)).toMatchObject({ staged: false, reason: 'already-exists' });
+    expect(await readFile(manifestPath)).toEqual(original);
+    const projectionPath = join(fixture.output, manifest.files.issue_catalogs!['issue-1']);
+    await rm(projectionPath);
+    await expect(run(process.execPath, [fixture.cli, '--if-missing'])).rejects.toThrow();
+    expect(await readFile(manifestPath)).toEqual(original);
+    await writeFile(assetPath, asset.bytes);
+    await run(process.execPath, [fixture.cli, '--if-missing']);
+    const repaired = JSON.parse(await readFile(projectionPath, 'utf8'));
+    expect(repaired.occurrences).toHaveLength(1);
+  });
+
+  it('leaves the existing legacy manifest intact when an asset fails validation', async () => {
+    const fixture = await dataset();
+    await cp(fixture.source, fixture.output, { recursive: true });
+    const manifestPath = join(fixture.output, 'manifest.json');
+    const original = await readFile(manifestPath);
+    await rm(join(fixture.output, fixture.resources[2].ref.path));
+    await expect(run(process.execPath, [fixture.cli, '--if-missing'])).rejects.toThrow();
+    expect(await readFile(manifestPath)).toEqual(original);
+  });
+
+  it('regenerates supplied projections rather than reading their paths', async () => {
+    const fixture = await dataset();
+    fixture.manifest.files.issue_catalogs = { 'issue-1': '../../untrusted.json' };
+    fixture.manifest.files.item_index = '../../untrusted-index.json';
+    await writeFixtureFile(fixture.source, 'manifest.json', JSON.stringify(fixture.manifest));
+    await run(process.execPath, [fixture.cli, fixture.source]);
+    const manifest = JSON.parse(await readFile(join(fixture.output, 'manifest.json'), 'utf8')) as Manifest;
+    expect(manifest.files.issue_catalogs!['issue-1']).toBe(`${prefix}/issue-catalogs/issue-1.json`);
+    expect(manifest.files.item_index).toBe(`${prefix}/item-index.json`);
+  });
+
+  it('rejects mismatched issue membership instead of dropping occurrences', async () => {
+    const fixture = await dataset();
+    const issuePath = join(fixture.source, fixture.manifest.files.issues);
+    const issues = JSON.parse(await readFile(issuePath, 'utf8'));
+    issues[0].occurrence_count = 0;
+    await writeFile(issuePath, JSON.stringify(issues));
+    await expect(run(process.execPath, [fixture.cli, fixture.source])).rejects.toThrow();
+    await expect(readFile(join(fixture.output, 'manifest.json'))).rejects.toThrow();
+  });
+
+  it('rejects an incomplete projection pair', async () => {
+    const fixture = await dataset();
+    fixture.manifest.files.item_index = `${prefix}/item-index.json`;
+    await writeFixtureFile(fixture.source, 'manifest.json', JSON.stringify(fixture.manifest));
+    await expect(run(process.execPath, [fixture.cli, fixture.source])).rejects.toThrow();
+    await expect(readFile(join(fixture.output, 'manifest.json'))).rejects.toThrow();
   });
 
   it.each(['tampered', 'missing'] as const)('rejects a %s primary-only preview resource', async (failure) => {

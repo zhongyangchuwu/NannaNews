@@ -1,4 +1,4 @@
-import type { Catalog, Manifest, PublicDate, PublicIssue, PublicItemDetail, PublicOccurrence } from './types';
+import type { Catalog, CatalogItem, Manifest, PublicDate, PublicIssue, PublicItemDetail, PublicOccurrence } from './types';
 import { manualPublicUrl } from './filter';
 import { manualReviewStampData, validDay, withinTextLimit } from './review-validation.mjs';
 
@@ -206,8 +206,11 @@ export function staticUrl(path: string, version?: string): string {
 async function fetchJson(url: string, signal?: AbortSignal, manifest = false): Promise<unknown> {
   const response = await fetch(url, { signal, credentials: 'omit', cache: manifest ? 'no-cache' : 'default' });
   if (!response.ok) throw new Error(`静态数据加载失败（${response.status}），请检查发布是否完整后重试。`);
-  try { return await response.json(); }
-  catch { throw new Error('静态数据不是有效的 JSON，请检查发布文件后重试。'); }
+  let value: unknown;
+  try { value = await response.json(); }
+  catch (error) { if (signal?.aborted) throw error; throw new Error('静态数据不是有效的 JSON，请检查发布文件后重试。'); }
+  signal?.throwIfAborted();
+  return value;
 }
 
 function manifestData(value: unknown): Manifest {
@@ -221,6 +224,16 @@ function manifestData(value: unknown): Manifest {
   for (const name of ['catalog', 'issues', 'search_documents', 'search_index']) {
     requireData(typeof value.files[name] === 'string');
     staticUrl(value.files[name], value.data_version);
+  }
+  const hasIssueCatalogs = value.files.issue_catalogs !== undefined;
+  requireData(hasIssueCatalogs === (value.files.item_index !== undefined));
+  if (hasIssueCatalogs) {
+    requireData(object(value.files.issue_catalogs) && typeof value.files.item_index === 'string');
+    staticUrl(value.files.item_index, value.data_version);
+    for (const [id, path] of Object.entries(value.files.issue_catalogs)) {
+      requireData(ISSUE_ID.test(id) && typeof path === 'string');
+      staticUrl(path, value.data_version);
+    }
   }
   for (const name of ['items', 'occurrences', 'issues', 'documents', 'images', 'pdfs']) {
     requireData(Number.isSafeInteger(value.counts[name]) && Number(value.counts[name]) >= 0);
@@ -258,29 +271,48 @@ function occurrenceData(value: unknown, detail = false, factsOnly = false): bool
             && value.manual_review.status === 'verified'))));
 }
 
-function catalogData(value: unknown, manifest: Manifest): Catalog {
-  requireData(object(value) && Array.isArray(value.items) && Array.isArray(value.occurrences)
-    && value.items.length === manifest.counts.items && value.occurrences.length === manifest.counts.occurrences);
-  const itemIds = new Set<string>();
-  const occurrenceIds = new Set<string>();
-  for (const item of value.items) {
+function itemData(value: unknown, manifest: Manifest, complete: boolean): CatalogItem[] {
+  requireData(Array.isArray(value) && (!complete || value.length === manifest.counts.items));
+  const ids = new Set<string>();
+  for (const item of value) {
     requireData(object(item) && typeof item.id === 'string' && ITEM_ID.test(item.id)
       && typeof item.latest_occurrence_id === 'string' && OCC_ID.test(item.latest_occurrence_id)
       && Number.isSafeInteger(item.occurrence_count) && Number(item.occurrence_count) > 0
-      && typeof item.detail_path === 'string' && stringArray(item.aliases) && !itemIds.has(item.id));
+      && typeof item.detail_path === 'string' && stringArray(item.aliases) && !ids.has(item.id));
     staticUrl(item.detail_path, manifest.data_version);
-    itemIds.add(item.id);
+    ids.add(item.id);
   }
   const aliases = new Set<string>();
-  for (const item of value.items) for (const alias of item.aliases) {
-    requireData(ITEM_ID.test(alias) && !itemIds.has(alias) && !aliases.has(alias));
+  for (const item of value) for (const alias of item.aliases) {
+    requireData(ITEM_ID.test(alias) && !ids.has(alias) && !aliases.has(alias));
     aliases.add(alias);
   }
+  return value as CatalogItem[];
+}
+
+function catalogData(value: unknown, manifest: Manifest, issues: PublicIssue[], issueId?: string): Catalog {
+  requireData(object(value) && Array.isArray(value.occurrences));
+  const items = itemData(value.items, manifest, !issueId);
+  if (!issueId) requireData(value.occurrences.length === manifest.counts.occurrences);
+  const byItem = new Map(items.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  const counts = new Map<string, number>();
+  const latest = new Set<string>();
+  const documents = new Map(issues.map((issue) => [issue.id, new Set(issue.documents.map((document) => document.id))]));
   for (const occurrence of value.occurrences) {
-    requireData(occurrenceData(occurrence, false, manifest.public_facts_only) && itemIds.has(occurrence.item_id) && !occurrenceIds.has(occurrence.id));
-    occurrenceIds.add(occurrence.id);
+    requireData(occurrenceData(occurrence, false, manifest.public_facts_only) && byItem.has(occurrence.item_id)
+      && !seen.has(occurrence.id) && (!issueId || occurrence.issue_id === issueId));
+    requireData(occurrence.kind === 'standalone' || documents.get(occurrence.issue_id)?.has(occurrence.document_id) === true);
+    seen.add(occurrence.id);
+    counts.set(occurrence.item_id, (counts.get(occurrence.item_id) || 0) + 1);
+    if (byItem.get(occurrence.item_id)?.latest_occurrence_id === occurrence.id) latest.add(occurrence.item_id);
   }
-  for (const item of value.items) requireData(occurrenceIds.has(item.latest_occurrence_id));
+  for (const item of items) {
+    const count = counts.get(item.id) || 0;
+    requireData(count > 0 && count <= item.occurrence_count && (issueId || count === item.occurrence_count && latest.has(item.id)));
+    if (issueId && seen.has(item.latest_occurrence_id)) requireData(latest.has(item.id));
+  }
+  if (issueId) requireData(value.occurrences.length === issues.find((issue) => issue.id === issueId)?.occurrence_count);
   return value as unknown as Catalog;
 }
 
@@ -342,48 +374,103 @@ function detailData(value: unknown, id: string, manifest: Manifest): PublicItemD
 
 export interface StaticDataset {
   manifest: Manifest;
-  catalog: Catalog;
   issues: PublicIssue[];
   searchIndexUrl: string;
   assetUrl(path: string): string;
   canonicalItemId(id: string): string;
+  loadCatalog(signal?: AbortSignal): Promise<Catalog>;
+  loadIssue(issueId: string, signal?: AbortSignal): Promise<Catalog>;
   loadItem(id: string, signal?: AbortSignal): Promise<PublicItemDetail>;
 }
 
 export async function loadDataset(signal?: AbortSignal): Promise<StaticDataset> {
   const manifest = manifestData(await fetchJson(new URL('manifest.json', dataRoot).href, signal, true));
-  const [rawCatalog, rawIssues] = await Promise.all([
-    fetchJson(staticUrl(manifest.files.catalog, manifest.data_version), signal),
-    fetchJson(staticUrl(manifest.files.issues, manifest.data_version), signal),
-  ]);
-  const catalog = catalogData(rawCatalog, manifest);
-  const issues = issuesData(rawIssues, manifest);
-  const documentsByIssue = new Map(issues.map((issue) => [issue.id, new Set(issue.documents.map((document) => document.id))]));
-  requireData(catalog.occurrences.every((occurrence) => {
-    if (occurrence.kind === 'standalone') return occurrence.issue_id === null && occurrence.document_id === null;
-    if (typeof occurrence.issue_id !== 'string' || typeof occurrence.document_id !== 'string') return false;
-    return documentsByIssue.get(occurrence.issue_id)?.has(occurrence.document_id) === true;
-  }));
-  const items = new Map(catalog.items.map((item) => [item.id, item]));
-  for (const item of catalog.items) for (const alias of item.aliases) items.set(alias, item);
+  const issues = issuesData(await fetchJson(staticUrl(manifest.files.issues, manifest.data_version), signal), manifest);
+  if (manifest.files.issue_catalogs) {
+    const paths = manifest.files.issue_catalogs;
+    requireData(Object.keys(paths).length === issues.length && issues.every((issue) => Object.hasOwn(paths, issue.id)));
+  }
+  let catalog: Catalog | undefined;
+  let index: CatalogItem[] | undefined;
+  const issueCache = new Map<string, Catalog>();
   const shards = new Map<string, JsonObject>();
+  const known = new Map<string, CatalogItem>();
+  function remember(items: CatalogItem[]) {
+    for (const item of items) {
+      for (const id of [item.id, ...item.aliases]) {
+        const previous = known.get(id);
+        requireData(!previous || (previous.id === item.id && previous.latest_occurrence_id === item.latest_occurrence_id
+          && previous.occurrence_count === item.occurrence_count && previous.detail_path === item.detail_path
+          && previous.aliases.length === item.aliases.length && previous.aliases.every((alias, i) => alias === item.aliases[i])));
+      }
+    }
+    for (const item of items) for (const id of [item.id, ...item.aliases]) known.set(id, item);
+  }
+  async function loadCatalog(catalogSignal?: AbortSignal): Promise<Catalog> {
+    if (catalog) return catalog;
+    const value = catalogData(await fetchJson(staticUrl(manifest.files.catalog, manifest.data_version), catalogSignal), manifest, issues);
+    remember(value.items);
+    catalog = value;
+    return value;
+  }
+  function validatedDetail(shard: JsonObject, item: CatalogItem): PublicItemDetail {
+    const detail = detailData(shard[item.id], item.id, manifest);
+    requireData(detail.latest_occurrence_id === item.latest_occurrence_id && detail.occurrences.length === item.occurrence_count);
+    const seen = new Set<string>();
+    for (const occurrence of detail.occurrences) {
+      requireData(!seen.has(occurrence.id));
+      seen.add(occurrence.id);
+      requireData(occurrence.kind === 'standalone' || issues.some((issue) => issue.id === occurrence.issue_id
+        && issue.documents.some((document) => document.id === occurrence.document_id)));
+    }
+    return detail;
+  }
   return {
-    manifest, catalog, issues,
+    manifest, issues, loadCatalog,
     searchIndexUrl: staticUrl(manifest.files.search_index, manifest.data_version),
     assetUrl: (path) => staticUrl(path, manifest.data_version),
-    canonicalItemId: (id) => items.get(id)?.id ?? id,
+    canonicalItemId: (id) => known.get(id)?.id ?? id,
+    async loadIssue(issueId, issueSignal) {
+      requireData(issues.some((issue) => issue.id === issueId), '未找到这期刊物，可能不在当前数据版本中。');
+      const cached = issueCache.get(issueId);
+      if (cached) return cached;
+      let value: Catalog;
+      if (manifest.files.issue_catalogs) {
+        value = catalogData(await fetchJson(staticUrl(manifest.files.issue_catalogs[issueId], manifest.data_version), issueSignal), manifest, issues, issueId);
+      } else {
+        const global = await loadCatalog(issueSignal);
+        const occurrences = global.occurrences.filter((occurrence) => occurrence.issue_id === issueId);
+        const ids = new Set(occurrences.map((occurrence) => occurrence.item_id));
+        value = { items: global.items.filter((item) => ids.has(item.id)), occurrences };
+      }
+      remember(value.items);
+      if (issueCache.size >= 8) issueCache.delete(issueCache.keys().next().value!);
+      issueCache.set(issueId, value);
+      known.clear();
+      if (catalog) remember(catalog.items);
+      if (index) remember(index);
+      for (const cachedIssue of issueCache.values()) remember(cachedIssue.items);
+      return value;
+    },
     async loadItem(id, itemSignal) {
-      const item = items.get(id);
+      if (!index && manifest.files.item_index) {
+        const value = itemData(await fetchJson(staticUrl(manifest.files.item_index, manifest.data_version), itemSignal), manifest, true);
+        remember(value);
+        index = value;
+      } else if (!manifest.files.item_index) await loadCatalog(itemSignal);
+      const item = known.get(id);
       if (!item) throw new Error('未找到这条消息，可能不在当前静态数据版本中。');
       let shard = shards.get(item.detail_path);
       if (!shard) {
         const raw = await fetchJson(staticUrl(item.detail_path, manifest.data_version), itemSignal);
         requireData(object(raw));
         shard = raw;
+        const detail = validatedDetail(shard, item);
         if (shards.size >= 8) shards.delete(shards.keys().next().value!);
         shards.set(item.detail_path, shard);
+        return detail;
       }
-      return detailData(shard[item.id], item.id, manifest);
+      return validatedDetail(shard, item);
     },
   };
 }

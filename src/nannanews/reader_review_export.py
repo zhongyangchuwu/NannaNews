@@ -21,8 +21,8 @@ from urllib.parse import urlsplit
 from nannanews.public_metadata_export import build_public_facts
 from nannanews.reader_reviews import ReviewError, ReviewStore, validate_payload
 from nannanews.static_export import (
-    GENERATOR, StaticExportError, _existing_manifest, _json, _manifest_files,
-    _no_symlinks, _publish,
+    GENERATOR, StaticExportError, _existing_manifest, _json, _manifest_files, _manifest_paths,
+    _no_symlinks, _publish, _write_catalog_projections,
 )
 
 _HASH = re.compile(r'[0-9a-f]{64}\Z')
@@ -242,8 +242,12 @@ def _prepare(stage, source, snapshot, revisions):
     base = snapshot['base_manifest']
     old = snapshot['base_version']
     generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        _manifest_paths(base.get('files'), old)
+    except (TypeError, ValueError):
+        raise ReviewPublishError('原始公开数据清单无效。') from None
     if (base.get('data_version') != old or base.get('schema_version') != 2
-            or base.get('generator') != GENERATOR or base.get('files') != _manifest_files(old)
+            or base.get('generator') != GENERATOR
             or any(type(base.get('counts', {}).get(key)) is not int or base['counts'][key] < 0
                    for key in _COUNTS)):
         raise ReviewPublishError('原始公开数据清单无效。')
@@ -420,9 +424,11 @@ def _prepare(stage, source, snapshot, revisions):
         (payload / name).write_bytes(_json(value))
         del value
         item = issue = document = detail = occurrence = image = None
+    projections = _write_catalog_projections(payload, _read_json(payload / 'catalog.json'),
+                                             _read_json(payload / 'issues.json'), version)
     (stage / 'versions').mkdir()
     os.rename(payload, stage / 'versions' / version)
-    manifest = dict(base, data_version=version, files=_manifest_files(version), counts=counts,
+    manifest = dict(base, data_version=version, files={**_manifest_files(version), **projections}, counts=counts,
                     generated_at=generated_at, review_base_version=old)
     (stage / 'manifest.json').write_bytes(_json(manifest))
     return version, affected_count, sorted(affected_issues)

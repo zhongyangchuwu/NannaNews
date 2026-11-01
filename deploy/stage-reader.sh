@@ -23,6 +23,7 @@ trap 'exit 1' HUP INT TERM
 mkdir "$workspace/scripts" "$workspace/public"
 cp /app/reader/scripts/stage-data.mjs "$workspace/scripts/stage-data.mjs"
 cp /app/reader/scripts/stage-public-facts.mjs "$workspace/scripts/stage-public-facts.mjs"
+cp /app/reader/scripts/catalog-projections.mjs "$workspace/scripts/catalog-projections.mjs"
 # The existing importer copies only current manifest references, validates asset
 # hashes and rejects symlinks. Unreferenced old versions in the input stay put.
 node "$workspace/scripts/stage-data.mjs" "$1"
