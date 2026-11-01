@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { catalogProjections } from './catalog-projections.mjs';
 
 const VERSION = /^[a-f0-9]{64}$/;
 const ITEM_ID = /^item-[a-f0-9]{24}$/;
@@ -185,6 +186,7 @@ export async function stagePublicFacts(target, factsPath = new URL('../public/ac
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const facts = JSON.parse(await readFile(factsPath, 'utf8'));
   const { catalog, issues, detailsByShard, searchDocuments, counts } = verifyFacts(facts);
+  const projections = catalogProjections(catalog, issues, facts.data_version);
   const staging = `${requestedTarget}.stage-${randomUUID()}`;
   let bytes = 0;
   try {
@@ -196,6 +198,7 @@ export async function stagePublicFacts(target, factsPath = new URL('../public/ac
       'search-documents.json': searchDocuments,
     };
     for (const [relative, value] of Object.entries(files)) bytes += await writeJson(staging, prefix + relative, value);
+    for (const [relative, value] of Object.entries(projections.files)) bytes += await writeJson(staging, relative, value);
     for (const [relative, details] of detailsByShard) {
       bytes += await writeJson(staging, prefix + relative.slice(`versions/${facts.data_version}/`.length), Object.fromEntries(details));
     }
@@ -203,11 +206,12 @@ export async function stagePublicFacts(target, factsPath = new URL('../public/ac
       schema_version: 2, generator: 'webnews-static-v2', data_version: facts.data_version,
       content_rules_version: 'public-facts-v1', public_facts_only: true,
       counts, files: { catalog: `${prefix}catalog.json`, issues: `${prefix}issues.json`,
-        search_documents: `${prefix}search-documents.json`, search_index: `${prefix}search-index.json` },
+        search_documents: `${prefix}search-documents.json`, search_index: `${prefix}search-index.json`,
+        issue_catalogs: projections.issueCatalogs, item_index: projections.itemIndex },
     };
     bytes += await writeJson(staging, 'manifest.json', manifest);
     await rename(staging, requestedTarget);
-    return { data_version: facts.data_version, counts, bytes, output: requestedTarget };
+    return { data_version: facts.data_version, counts, bytes, files: Object.keys(files).length + Object.keys(projections.files).length + detailsByShard.size + 1, output: requestedTarget };
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;

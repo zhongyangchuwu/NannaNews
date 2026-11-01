@@ -305,7 +305,7 @@ describe('public human review boundaries', () => {
   it('loads published standalone activities without issue or document relations', async () => {
     const loaded = await loadStandalone(false);
     expect(loaded.dataset.issues).toEqual([]);
-    expect(loaded.dataset.catalog.occurrences[0]).toMatchObject({ kind: 'standalone', issue_id: null,
+    expect((await loaded.dataset.loadCatalog()).occurrences[0]).toMatchObject({ kind: 'standalone', issue_id: null,
       document_id: null, source_id: `source-${'a'.repeat(24)}`, content_status: 'human_verified' });
     expect(loaded.occurrence.manual_review?.activity?.content).toBe('Standalone reviewed content');
     expect(currentActivityDate(loaded.occurrence, '2026-10-25')?.normalized_date).toBe('2026-11-02');
@@ -314,7 +314,7 @@ describe('public human review boundaries', () => {
   it('loads compact tracked facts without restoring private evidence or long content', async () => {
     const loaded = await loadStandalone(true);
     expect(loaded.dataset.manifest.public_facts_only).toBe(true);
-    expect(loaded.dataset.catalog.occurrences[0].kind).toBe('standalone');
+    expect((await loaded.dataset.loadCatalog()).occurrences[0].kind).toBe('standalone');
     expect(loaded.occurrence.manual_review?.activity).toBeUndefined();
     expect(loaded.occurrence.body_text).toBe('');
     expect(loaded.occurrence.date_review).toBeNull();
@@ -422,7 +422,95 @@ describe('public human review boundaries', () => {
         const payload = payloads.get(new URL(String(input)).pathname);
         return new Response(JSON.stringify(payload ?? null), { status: payload === undefined ? 404 : 200 });
       });
-      await expect(loadDataset()).rejects.toThrow();
+      const dataset = await loadDataset();
+      await expect(dataset.loadCatalog()).rejects.toThrow();
     }
+  });
+});
+
+describe('lazy static datasets', () => {
+  function partitioned() {
+    const payloads = datasetPayload(occurrenceFixture());
+    const manifest = payloads.get('/data/manifest.json') as Manifest;
+    const catalog = payloads.get(`/data/${manifest.files.catalog}`) as Catalog;
+    const prefix = `versions/${DATA_VERSION}`;
+    const alias = `item-${'4'.repeat(24)}`;
+    catalog.items[0].aliases = [alias];
+    manifest.files.item_index = `${prefix}/item-index.json`;
+    manifest.files.issue_catalogs = { [ISSUE_ID]: `${prefix}/issue-catalogs/${ISSUE_ID}.json` };
+    payloads.set(`/data/${manifest.files.item_index}`, catalog.items);
+    payloads.set(`/data/${manifest.files.issue_catalogs[ISSUE_ID]}`, structuredClone(catalog));
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      const payload = payloads.get(path);
+      return new Response(JSON.stringify(payload ?? null), { status: payload === undefined ? 404 : 200 });
+    });
+    return { payloads, manifest, alias, requests };
+  }
+
+  it('bootstraps metadata only, loads a single issue, and defers the global catalog', async () => {
+    const { manifest, requests } = partitioned();
+    const dataset = await loadDataset();
+    expect(requests).toEqual(['/data/manifest.json', `/data/${manifest.files.issues}`]);
+    expect((await dataset.loadIssue(ISSUE_ID)).occurrences).toHaveLength(1);
+    expect(requests).toContain(`/data/${manifest.files.issue_catalogs![ISSUE_ID]}`);
+    expect(requests).not.toContain(`/data/${manifest.files.catalog}`);
+    expect(requests).not.toContain(`/data/${manifest.files.item_index}`);
+    await dataset.loadCatalog();
+    expect(requests).toContain(`/data/${manifest.files.catalog}`);
+  });
+
+  it('resolves direct aliases using only the index and detail shard', async () => {
+    const { alias, manifest, requests } = partitioned();
+    const dataset = await loadDataset();
+    expect(dataset.canonicalItemId(alias)).toBe(alias);
+    expect((await dataset.loadItem(alias)).id).toBe(ITEM_ID);
+    expect(dataset.canonicalItemId(alias)).toBe(ITEM_ID);
+    expect(requests).toContain(`/data/${manifest.files.item_index}`);
+    expect(requests).not.toContain(`/data/${manifest.files.catalog}`);
+    expect(requests).not.toContain(`/data/${manifest.files.issue_catalogs![ISSUE_ID]}`);
+  });
+
+  it('accepts a global latest occurrence outside the issue subset', async () => {
+    const { payloads, manifest } = partitioned();
+    const subset = payloads.get(`/data/${manifest.files.issue_catalogs![ISSUE_ID]}`) as Catalog;
+    subset.items[0].latest_occurrence_id = `occ-${'5'.repeat(24)}`;
+    subset.items[0].occurrence_count = 2;
+    const dataset = await loadDataset();
+    expect((await dataset.loadIssue(ISSUE_ID)).items[0].latest_occurrence_id).toBe(`occ-${'5'.repeat(24)}`);
+  });
+
+  it('rejects incomplete pairs and unversioned paths at bootstrap', async () => {
+    const { manifest } = partitioned();
+    delete manifest.files.item_index;
+    await expect(loadDataset()).rejects.toThrow();
+    manifest.files.item_index = 'item-index.json';
+    await expect(loadDataset()).rejects.toThrow();
+  });
+
+  it('rejects incorrect issue membership and duplicate aliases lazily', async () => {
+    const { payloads, manifest } = partitioned();
+    const subset = payloads.get(`/data/${manifest.files.issue_catalogs![ISSUE_ID]}`) as Catalog;
+    subset.occurrences[0].issue_id = `issue-${'6'.repeat(24)}`;
+    const dataset = await loadDataset();
+    await expect(dataset.loadIssue(ISSUE_ID)).rejects.toThrow();
+    const index = payloads.get(`/data/${manifest.files.item_index}`) as Catalog['items'];
+    index[0].aliases.push(index[0].aliases[0]);
+    await expect(dataset.loadItem(ITEM_ID)).rejects.toThrow();
+  });
+
+  it('falls back to the legacy catalog lazily and retries after an aborted load', async () => {
+    const { manifest, requests } = partitioned();
+    delete manifest.files.issue_catalogs;
+    delete manifest.files.item_index;
+    const dataset = await loadDataset();
+    expect(requests).not.toContain(`/data/${manifest.files.catalog}`);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(dataset.loadIssue(ISSUE_ID, controller.signal)).rejects.toThrow();
+    expect((await dataset.loadIssue(ISSUE_ID)).occurrences).toHaveLength(1);
+    expect(requests.filter((path) => path === `/data/${manifest.files.catalog}`)).toHaveLength(2);
   });
 });

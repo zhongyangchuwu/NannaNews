@@ -5,7 +5,7 @@ import { loadDataset } from './data';
 import type { StaticDataset } from './data';
 import { beijingToday, parseFilters, queryCatalog, serializeFilters, sourceTypesForHosts, SOURCE_TYPES } from './filter';
 import { SearchClient } from './search';
-import type { CatalogOccurrence, Filters, PublicIssue, PublicItemDetail, ReaderMode, ReaderState, ReaderView } from './types';
+import type { Catalog, Filters, PublicIssue, PublicItemDetail, ReaderMode, ReaderState, ReaderView } from './types';
 
 const ReaderContext = createContext<ReaderState | null>(null);
 const PREF_KEY = 'nanna-reader.preferences.v1';
@@ -51,7 +51,11 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState(readPreferences);
   const [today, setToday] = useState(beijingToday);
   const [detail, setDetail] = useState<{ key: string; value: PublicItemDetail | null; loading: boolean; error: string | null }>({ key: '', value: null, loading: false, error: null });
-  const [search, setSearch] = useState<{ q: string; hits: string[] | null; loading: boolean; error: string | null }>({ q: '', hits: null, loading: false, error: null });
+  const [scope, setScope] = useState<{ dataset: StaticDataset | null; key: string; catalog: Catalog | null; error: string | null }>({ dataset: null, key: '', catalog: null, error: null });
+  const [scopeAttempt, setScopeAttempt] = useState(0);
+  const [detailAttempt, setDetailAttempt] = useState(0);
+  const [metadataRevision, setMetadataRevision] = useState(0);
+  const [search, setSearch] = useState<{ key: string; q: string; hits: string[] | null; loading: boolean; error: string | null }>({ key: '', q: '', hits: null, loading: false, error: null });
   const searchClient = useRef<SearchClient | null>(null);
   const searchGeneration = useRef(0);
   const params = useMemo(() => new URLSearchParams(location.search), [location.search]);
@@ -79,6 +83,25 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   const editionIssueId = issueId || backIssueId;
   const editionIssue = editionIssueId ? dataset?.issues.find((issue) => issue.id === editionIssueId) || null : latestIssue;
   const activeIssueId = issueId || backIssueId || (view === 'edition' || (itemId && back?.split('?')[0] === '/') ? editionIssue?.id : undefined);
+  const scopeKey = view === 'edition' ? (editionIssue ? `issue:${editionIssue.id}` : '')
+    : view === 'issue' ? (editionIssue ? `issue:${editionIssue.id}` : '')
+      : view === 'activities' || view === 'history' || view === 'favorites' ? 'global' : '';
+  const scopedCatalog = scope.dataset === dataset && scope.key === scopeKey && scopeKey ? scope.catalog : null;
+
+  useEffect(() => {
+    if (!dataset || !scopeKey) return;
+    const controller = new AbortController();
+    let active = true;
+    setScope({ dataset, key: scopeKey, catalog: null, error: null });
+    const request = scopeKey === 'global' ? dataset.loadCatalog(controller.signal)
+      : dataset.loadIssue(scopeKey.slice(6), controller.signal);
+    request.then((catalog) => {
+      if (active) { setScope({ dataset, key: scopeKey, catalog, error: null }); setMetadataRevision((value) => value + 1); }
+    }).catch((error: unknown) => {
+      if (active) setScope({ dataset, key: scopeKey, catalog: null, error: error instanceof Error ? error.message : '静态数据加载失败。' });
+    });
+    return () => { active = false; controller.abort(); };
+  }, [dataset, scopeKey, scopeAttempt]);
 
   useEffect(() => setActionError(null), [location.key]);
 
@@ -128,24 +151,24 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const generation = ++searchGeneration.current;
     const q = filters.q.trim();
-    if (!dataset || !q) {
-      setSearch({ q, hits: null, loading: false, error: null });
+    if (!dataset || !scopeKey || !q) {
+      setSearch({ key: scopeKey, q, hits: null, loading: false, error: null });
       return;
     }
-    setSearch({ q, hits: null, loading: true, error: null });
+    setSearch({ key: scopeKey, q, hits: null, loading: true, error: null });
     try {
       searchClient.current ??= new SearchClient(dataset.searchIndexUrl);
       searchClient.current.search(q).then((hits) => {
-        if (searchGeneration.current === generation) setSearch({ q, hits, loading: false, error: null });
+        if (searchGeneration.current === generation) setSearch({ key: scopeKey, q, hits, loading: false, error: null });
       }).catch((error: unknown) => {
         if (searchGeneration.current !== generation || (typeof error === 'object' && error !== null && 'code' in error && error.code === 'SUPERSEDED')) return;
-        setSearch({ q, hits: null, loading: false, error: error instanceof Error ? error.message : '浏览器检索失败，请重试。' });
+        setSearch({ key: scopeKey, q, hits: null, loading: false, error: error instanceof Error ? error.message : '浏览器检索失败，请重试。' });
       });
     } catch (error) {
-      setSearch({ q, hits: null, loading: false, error: error instanceof Error ? error.message : '浏览器不支持本地检索。' });
+      setSearch({ key: scopeKey, q, hits: null, loading: false, error: error instanceof Error ? error.message : '浏览器不支持本地检索。' });
     }
     return () => { searchGeneration.current++; };
-  }, [dataset, filters.q]);
+  }, [dataset, filters.q, scopeKey]);
 
   useEffect(() => {
     if (!dataset || !itemId) { setDetail({ key: '', value: null, loading: false, error: null }); return; }
@@ -153,20 +176,20 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
     let active = true;
     setDetail({ key: itemId, value: null, loading: true, error: null });
     dataset.loadItem(itemId, controller.signal).then((value) => {
-      if (active) setDetail({ key: itemId, value, loading: false, error: null });
+      if (active) { setDetail({ key: itemId, value, loading: false, error: null }); setMetadataRevision((revision) => revision + 1); }
     }).catch((error: unknown) => {
       if (active) setDetail({ key: itemId, value: null, loading: false, error: error instanceof Error ? error.message : '消息详情加载失败。' });
     });
     return () => { active = false; controller.abort(); };
-  }, [dataset, itemId]);
+  }, [dataset, itemId, detailAttempt]);
 
   const favorites = useMemo(() => new Set([...preferences.favorites].map((id) => dataset?.canonicalItemId(id) ?? id)),
-    [dataset, preferences.favorites]);
+    [dataset, preferences.favorites, metadataRevision]);
 
-  const result = useMemo(() => queryCatalog(dataset?.catalog || emptyCatalog, filters, {
+  const result = useMemo(() => queryCatalog(scopedCatalog || emptyCatalog, filters, {
     mode, asOf: today, issueId: activeIssueId || undefined, favorites, followedColleges: preferences.followedColleges,
-    searchHits: filters.q.trim() ? search.q === filters.q.trim() && !search.loading && !search.error ? search.hits || [] : [] : null,
-  }), [dataset, filters, mode, today, activeIssueId, favorites, preferences.followedColleges, search]);
+    searchHits: filters.q.trim() ? search.key === scopeKey && search.q === filters.q.trim() && !search.loading && !search.error ? search.hits || [] : [] : null,
+  }), [scopedCatalog, scopeKey, filters, mode, today, activeIssueId, favorites, preferences.followedColleges, search]);
   const editionRecords = view === 'edition' || view === 'issue' || backIssueId
     || (itemId && back?.split('?')[0] === '/') ? result.matchingRecords : emptyCatalog.occurrences;
 
@@ -174,14 +197,14 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
     const categories = new Set<string>();
     const colleges = new Set<string>();
     const sources = new Set<string>();
-    for (const occurrence of dataset?.catalog.occurrences || []) {
+    for (const occurrence of scopedCatalog?.occurrences || []) {
       if (occurrence.category) categories.add(occurrence.category);
       for (const college of occurrence.colleges) colleges.add(college);
       for (const source of sourceTypesForHosts(occurrence.source_hosts)) sources.add(source);
     }
     return { categories: [...categories].sort(), colleges: [...colleges].sort((a, b) => a.localeCompare(b, 'zh-CN')),
       sources: SOURCE_TYPES.filter((source) => sources.has(source)) };
-  }, [dataset]);
+  }, [scopedCatalog]);
   const selectedItem = detail.key === itemId ? detail.value : null;
   const selectedOccurrence = selectedItem?.occurrences.find((occurrence) => occurrence.id === params.get('occ'))
     || selectedItem?.occurrences.find((occurrence) => occurrence.id === selectedItem.latest_occurrence_id) || null;
@@ -189,14 +212,18 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
     ? dataset?.issues.find((issue) => issue.id === selectedOccurrence?.issue_id) || null
     : view === 'edition' || view === 'issue' ? editionIssue : null;
   const missingIssue = dataset && issueId && !selectedIssue ? '未找到这期刊物，可能不在当前数据版本中。' : null;
-  const error = actionError || parsed.error || routeError || loadError || (search.q === filters.q.trim() ? search.error : null) || missingIssue;
+  const scopeError = scope.dataset === dataset && scope.key === scopeKey && scopeKey ? scope.error : null;
+  const error = actionError || parsed.error || routeError || loadError || scopeError || (scopeKey && search.key === scopeKey && search.q === filters.q.trim() ? search.error : null) || missingIssue;
   const queryString = serializeFilters(filters).toString();
   const detailList = `${selectedIssue ? `/issues/${encodeURIComponent(selectedIssue.id)}` : '/history'}${queryString ? `?${queryString}` : ''}`;
   const currentList = `${path}${queryString ? `?${queryString}` : ''}`;
   const listHref = itemId ? back || detailList : issueId ? `/issues${queryString ? `?${queryString}` : ''}` : currentList;
 
   function updatePreferences(kind: 'favorites' | 'followedColleges', value: string) {
-    if (kind === 'favorites' ? !ITEM_ID.test(value) : !options.colleges.includes(value)) return;
+    if (kind === 'favorites' ? !ITEM_ID.test(value) : !options.colleges.includes(value)
+      && !selectedOccurrence?.colleges.includes(value)
+      && !selectedOccurrence?.college_mentions.some((college) => college.name === value)
+      && !selectedOccurrence?.date_review?.source_review.activity?.colleges.some((college) => college.name === value)) return;
     const target = kind === 'favorites' ? dataset?.canonicalItemId(value) ?? value : value;
     setPreferences((previous) => {
       const values = kind === 'favorites'
@@ -224,11 +251,11 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
   }
 
   const state: ReaderState = {
-    status: loading ? 'loading' : error ? 'error' : 'ready', error,
+    status: loading || Boolean(dataset && scopeKey && !scopedCatalog && !scopeError) ? 'loading' : error ? 'error' : 'ready', error,
     manifest: dataset?.manifest || null, issues: dataset?.issues || [], view, mode, filters,
     editionIssue, editionRecords, today,
     records: result.records, total: result.total, page: result.page, pages: result.pages, perPage: result.per_page,
-    searching: Boolean(filters.q.trim()) && (search.loading || search.q !== filters.q.trim()),
+    searching: Boolean(scopeKey && filters.q.trim()) && (search.key !== scopeKey || search.loading || search.q !== filters.q.trim()),
     selectedIssue, selectedItem, selectedOccurrence,
     detailStatus: !itemId ? 'idle' : detail.key !== itemId || detail.loading ? 'loading' : detail.error ? 'error' : selectedItem ? 'ready' : 'loading',
     detailError: detail.key === itemId ? detail.error : null,
@@ -253,6 +280,8 @@ export function ReaderProvider({ children }: { children: ReactNode }) {
     retry() {
       if (actionError) { setActionError(null); return; }
       if (parsed.error || routeError || missingIssue) { navigate('/'); return; }
+      if (scopeError) { setScopeAttempt((attempt) => attempt + 1); return; }
+      if (itemId && detail.error) { setDetailAttempt((attempt) => attempt + 1); return; }
       setLoadAttempt((attempt) => attempt + 1);
     },
     itemHref(id, occurrenceId) {

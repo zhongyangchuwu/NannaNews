@@ -88,7 +88,8 @@ export interface Manifest {
   content_rules_version?: string;
   public_facts_only?: boolean;
   counts: { items: number; occurrences: number; issues: number; documents: number; images: number; pdfs: number };
-  files: { catalog: string; issues: string; search_documents: string; search_index: string };
+  files: { catalog: string; issues: string; search_documents: string; search_index: string;
+    issue_catalogs?: Record<string, string>; item_index?: string };
 }
 export interface Filters {
   q: string; category: string[]; college: string[]; source: string[];
